@@ -1,0 +1,23 @@
+# 构建产物（由 tools/build-browser.js 生成）
+dist/
+
+# 音频原件（wav 10MB，运行时只用 bgm.mp3）
+bgm/*.wav
+
+# 大体积未引用素材
+image.png
+
+# 微信开发者工具本地私有配置
+project.private.config.json
+
+# 依赖 / 缓存
+node_modules/
+*.log
+
+# 编辑器
+.vscode/
+.idea/
+.DS_Store
+
+# 本地工作记忆（agent 内部笔记）
+.workbuddy/
