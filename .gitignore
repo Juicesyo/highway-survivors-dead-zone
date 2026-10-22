@@ -21,3 +21,6 @@ node_modules/
 
 # 本地工作记忆（agent 内部笔记）
 .workbuddy/
+
+# WorkBuddy 应用标记文件
+*.genie
