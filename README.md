@@ -9,8 +9,14 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | 3 张 | 4 名 | 72 件（主 35 / 副 27 / 重 10） | 23 件 | 57 组 | 8 种 + 3 首领 | ≈ 1.7 MB |
 
-> **现在就能玩**：双击 `dist/highway-survivors.html`（手机浏览器体验最佳，桌面可鼠标拖动）。
-> 这是由同一套源码构建的单文件预览版，图集与 BGM 全部内联，零依赖、不需要开发者工具。
+> **现在就能玩**：
+> - GitHub Pages 在线 Demo —— https://juicesyo.github.io/highway-survivors-dead-zone/
+> - 备用线路 —— https://highway-survivors-dead-zone.app.workbuddy.host/?sharecode=TQZFVO477Y
+>
+> 手机浏览器体验最佳，桌面可鼠标拖动；首次点击画面才会出声。
+>
+> 也可以双击本地构建出的 `dist/highway-survivors.html`。这是由同一套源码构建的单文件预览版，
+> 图集与 BGM 全部内联，零依赖、不需要开发者工具。
 
 | | |
 | --- | --- |
