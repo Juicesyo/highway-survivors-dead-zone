@@ -881,8 +881,15 @@
         text(ctx, ch.name, cx + fs(46), yy + fs(20), 15, owned ? C.text : C.dim, 'left', true);
         var nameW = ctx.measureText(ch.name).width;
         text(ctx, ch.tag, cx + fs(46) + nameW + fs(8), yy + fs(20), 9.5, ch.color, 'left', false);
-        text(ctx, ch.perks.join(' · '), cx + fs(46), yy + fs(40), 10, C.dim, 'left', false);
-        text(ctx, ch.desc, cx + fs(46), yy + fs(56), 9.5, 'rgba(139,149,163,0.8)', 'left', false);
+        /* 特性 / 描述必须收在右侧价格按钮左边：未解锁时右侧有 fs(84) 的按钮，
+           以前不限宽会直接压到「解锁 300」底下 */
+        var descW = cw - fs(46) - fs(10) - (owned ? fs(70) : fs(84));
+        var pls = wrap2(ctx, ch.perks.join(' · '), descW, 10);
+        text(ctx, pls[1] ? pls[0].replace(/.$/, '…') : pls[0],
+          cx + fs(46), yy + fs(40), 10, C.dim, 'left', false);
+        var dls = wrap2(ctx, ch.desc, descW, 9.5);
+        text(ctx, dls[1] ? dls[0].replace(/.$/, '…') : dls[0],
+          cx + fs(46), yy + fs(56), 9.5, 'rgba(139,149,163,0.8)', 'left', false);
 
         if (!owned) {
           var label = d.gold >= ch.cost ? ('解锁 ' + ch.cost) : (ch.cost + ' 金币');
