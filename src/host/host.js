@@ -179,6 +179,15 @@
       function done() {
         if (--left > 0) return;
         ui.loading = false;
+
+        /* 请求还在飞的时候玩家切了周期：这份结果只进缓存，不覆盖当前页，
+           然后立刻按新周期再拉一次（否则会看到"周榜"标题下挂着总榜数据） */
+        if (key !== ui.period) {
+          if (rows) ui.cache[key] = { rows: rows, my: my, t: Date.now() };
+          Host.loadRank(ui.period, true);
+          return;
+        }
+
         if (rows) ui.rows = rows;
         ui.my = my;
         if (!rows && listErr) {
