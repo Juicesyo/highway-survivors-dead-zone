@@ -91,6 +91,9 @@ const html = `<!DOCTYPE html>
 <body>
 <canvas id="game"></canvas>
 <div id="rotate">本游戏为竖屏体验，请把设备竖过来</div>
+<!-- B站 Toy 官方 SDK：排行榜 / 云存档都走它，必须早于 app.js 加载。
+     在站外打开时脚本也能加载，只是调用会 reject（HS.Host 已做降级） -->
+<script src="https://s1.hdslb.com/bfs/seed/toy/app/sdk/toy-sdk.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

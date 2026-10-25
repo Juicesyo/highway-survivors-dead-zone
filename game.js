@@ -8,6 +8,12 @@
 require('./src/core/util.js');
 require('./src/core/platform.js');
 require('./src/core/input.js');
+/* 宿主适配层：微信 / B站 Toy / 浏览器 / Node，四个 adapter 一套核心代码。
+   顺序必须在 platform 之后（要用 P.isWx / P.isNode 判断），save 之前（存档要挂云同步） */
+require('./src/host/host.js');
+require('./src/host/toy.js');
+require('./src/host/wx.js');
+require('./src/host/web.js');
 require('./assets/sprites.js');
 require('./assets/title-bg.js');
 require('./src/core/sprites.js');

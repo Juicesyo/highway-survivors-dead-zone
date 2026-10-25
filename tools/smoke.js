@@ -1219,8 +1219,9 @@ Game.startRun('highway', 'soldier');
 
   /* 2. 初始武器阶段：升级池可以给主武器 */
   check('开局主武器未锁定', p.mainLocked === false, String(p.mainLocked));
+  /* 抽样 120 轮：40 轮时随机波动能到 ±6 张，会把"减半"这条比较顶翻（误报过一次） */
   let mainCards = 0;
-  for (let k = 0; k < 40; k++) {
+  for (let k = 0; k < 120; k++) {
     for (const c of Game.buildChoices(3)) {
       const d = D.gear[c.id];
       if (c.kind === 'weaponNew' && d && (d.slot === 'main' || d.slot === 'heavy')) mainCards++;
@@ -1232,7 +1233,7 @@ Game.startRun('highway', 'soldier');
   p.mainLocked = true;
   let lockedMain = 0;
   const curMain = HS.Gear.mainEntry(p);
-  for (let k = 0; k < 40; k++) {
+  for (let k = 0; k < 120; k++) {
     for (const c of Game.buildChoices(3)) {
       const d = D.gear[c.id];
       if (c.kind !== 'weaponNew' || !d) continue;
@@ -2710,6 +2711,67 @@ section('连锁闪电与关卡强度');
   check('地图强度不作用于 Boss', Math.round(h.boss / 4) === Math.round(n.boss),
     Math.round(h.boss) + ' / ' + Math.round(n.boss));
 }
+
+/* ================= 11. 宿主适配与排行榜 ================= */
+section('宿主适配层');
+check('Node 环境识别为 node 宿主', HS.Host.id === 'node', HS.Host.id);
+check('Node 宿主可以记成绩（本地记录）', HS.Host.canRank() === true);
+check('Node 宿主没有云存档', HS.Host.canCloud() === false);
+check('秒 -> 百分秒整数', HS.Host.toScore(123.456) === 12346, String(HS.Host.toScore(123.456)));
+check('百分秒 -> M:SS.cc', HS.Host.fmtScore(12345) === '2:03.45', HS.Host.fmtScore(12345));
+check('超出上限被夹住', HS.Host.toScore(1e9) === 16777215, String(HS.Host.toScore(1e9)));
+
+section('无尽排行榜');
+/* node 桩的 P.get/P.set 是空操作，装一层内存存储才能验"提交 → 读回" */
+const h_mem = {};
+HS.P.set = (k, v) => { h_mem[k] = JSON.parse(JSON.stringify(v)); };
+HS.P.get = (k) => (h_mem[k] ? JSON.parse(JSON.stringify(h_mem[k])) : '');
+
+HS.Save.reset();
+Game.state = 'title';
+Game.endless = true;
+Game.startRun('flood', 'soldier');
+Game.run.t = 137.42;
+Game.finishRun(false);
+let h_rd = HS.Save.data;
+check('无尽成绩记入 bestEndless', Math.abs(h_rd.bestEndless - 137.42) < 0.01, h_rd.bestEndless.toFixed(2) + 's');
+check('无尽局数 +1', h_rd.endlessRuns === 1, 'runs=' + h_rd.endlessRuns);
+check('无尽不算通关', h_rd.wins === 0 && !h_rd.mapWins.flood, 'wins=' + h_rd.wins);
+check('结算结果标记无尽', Game.run.result.endless === true);
+
+HS.Host.loadRank('all', true);
+const h_rows = HS.Host.rankUI.rows;
+check('提交后出现在榜上', h_rows.length === 1 && h_rows[0].score === 13742, h_rows.length + ' 行');
+check('我的名次可查', HS.Host.rankUI.my && HS.Host.rankUI.my.ranked === true,
+  HS.Host.rankUI.my ? ('第 ' + HS.Host.rankUI.my.rank + ' 名') : 'null');
+
+Game.state = 'title';
+Game.openRank();
+check('打开排行榜', Game.state === 'rank');
+Game.render();
+check('榜单页画出周期切换', Game.hits.some(h => h.id === 'rank:period:day'));
+check('榜单页画出返回按钮', Game.hits.some(h => h.id === 'back'));
+Game.activate('rank:period:week');
+check('切到周榜', HS.Host.rankUI.period === 'week');
+Game.activate('back');
+check('返回标题', Game.state === 'title');
+
+/* 未接入排行榜的宿主：不能白屏，要给出明确提示 */
+const h_keep = HS.Host.adapter;
+HS.Host.use(HS.HostAdapters.wx);
+HS.Host.loadRank('all', true);
+check('未接入宿主给出提示', HS.Host.rankUI.errCode === 'unsupported' && !!HS.Host.rankUI.err,
+  HS.Host.rankUI.err);
+HS.Host.use(h_keep);
+
+/* 普通关卡不进无尽榜 */
+const h_beforeRuns = HS.Save.data.endlessRuns;
+Game.state = 'title';
+Game.endless = false;
+Game.startRun('highway', 'soldier');
+Game.run.t = 300;
+Game.finishRun(true);
+check('普通关卡不记无尽成绩', HS.Save.data.endlessRuns === h_beforeRuns, 'endlessRuns=' + HS.Save.data.endlessRuns);
 
 /* ================= 结果 ================= */
 console.log('\n----------------------------------------');

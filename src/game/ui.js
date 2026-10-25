@@ -723,9 +723,10 @@
     var bw = W * 0.72, bx = (W - bw) / 2;
     var by = H * 0.595;
     plate(g, ctx, 'start', bx, by, bw, fs(58), '开 始 游 戏', true);
-    var hw = (bw - fs(12)) / 2;
-    plate(g, ctx, 'meta', bx, by + fs(76), hw, fs(46), '研究所', false);
-    plate(g, ctx, 'settings', bx + hw + fs(12), by + fs(76), hw, fs(46), '设置', false);
+    var gw3 = (bw - fs(16)) / 3;
+    plate(g, ctx, 'meta', bx, by + fs(76), gw3, fs(46), '研究所', false);
+    plate(g, ctx, 'rank', bx + gw3 + fs(8), by + fs(76), gw3, fs(46), '排行榜', false);
+    plate(g, ctx, 'settings', bx + (gw3 + fs(8)) * 2, by + fs(76), gw3, fs(46), '设置', false);
 
     /* ---- 记录条：三栏合并成一条钢板 ---- */
     var d = HS.Save.data;
@@ -1980,13 +1981,192 @@
     }
 
     var bestT = HS.Save.data.bestTime;
-    text(ctx, '历史最佳 ' + U.fmt(bestT) + '   ·   累计击杀 ' + HS.Save.data.totalKills + '   ·   金币 ' + HS.Save.data.gold,
-      W / 2, H * 0.665, 10.5, 'rgba(139,149,163,0.8)', 'center', false);
+    if (r.endless) {
+      /* 无尽模式：这一行让给排行榜状态，普通关卡仍显示历史最佳 */
+      var Hst = HS.Host;
+      var line, lc = C.blue;
+      if (r.rankLoading) {
+        line = '正在上传无尽成绩…';
+      } else if (r.rankErr) {
+        line = '未上榜 · ' + (r.rankErr.msg || '稍后再试');
+        lc = '#d08a5a';
+      } else if (r.rankMy && r.rankMy.ranked) {
+        line = '本次排名 第 ' + r.rankMy.rank + ' 名   ·   无尽最佳 ' + Hst.fmtScore(Hst.toScore(r.bestEndless || r.time));
+        lc = C.gold;
+      } else {
+        line = '成绩已记录 · 无尽最佳 ' + Hst.fmtScore(Hst.toScore(r.bestEndless || r.time));
+      }
+      text(ctx, line, W / 2, H * 0.665, 10.5, lc, 'center', false);
+    } else {
+      text(ctx, '历史最佳 ' + U.fmt(bestT) + '   ·   累计击杀 ' + HS.Save.data.totalKills + '   ·   金币 ' + HS.Save.data.gold,
+        W / 2, H * 0.665, 10.5, 'rgba(139,149,163,0.8)', 'center', false);
+    }
 
     var bw = W * 0.62, bx = (W - bw) / 2;
     button(g, ctx, 'again', bx, H * 0.76, bw, fs(52), '再来一局', 'primary');
-    button(g, ctx, 'meta', bx, H * 0.76 + fs(62), bw * 0.48, fs(42), '研究所', 'ghost');
-    button(g, ctx, 'title', bx + bw * 0.52, H * 0.76 + fs(62), bw * 0.48, fs(42), '主菜单', 'ghost');
+    var bw3 = (bw - fs(16)) / 3;
+    button(g, ctx, 'rank', bx, H * 0.76 + fs(62), bw3, fs(42), '排行榜', 'ghost', true);
+    button(g, ctx, 'meta', bx + bw3 + fs(8), H * 0.76 + fs(62), bw3, fs(42), '研究所', 'ghost', true);
+    button(g, ctx, 'title', bx + (bw3 + fs(8)) * 2, H * 0.76 + fs(62), bw3, fs(42), '主菜单', 'ghost', true);
+  };
+
+  /* ---------------- 排行榜 ---------------- */
+
+  /* 头像缓存：榜单里同一个人的头像每帧都画，不缓存会疯狂建 Image */
+  var avCache = {};
+  var avCount = 0;
+
+  function headShot(ctx, url, name, cx, cy, d) {
+    var im = null;
+    if (url) {
+      var e = avCache[url];
+      if (!e) {
+        if (avCount > 80) { avCache = {}; avCount = 0; }   // 换榜了，旧头像丢掉
+        e = avCache[url] = { tried: false, im: null };
+        avCount++;
+      }
+      if (!e.tried) {
+        e.tried = true;
+        P.loadImage(url, function (img) { e.im = img || null; });
+      }
+      im = e.im;
+    }
+
+    if (im && im.width) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(cx, cy, d / 2, 0, U.TAU);
+      ctx.closePath();
+      ctx.clip();
+      ctx.drawImage(im, cx - d / 2, cy - d / 2, d, d);
+      ctx.restore();
+      return;
+    }
+
+    /* 没头像（或还没加载完）：圆底 + 首字 */
+    ctx.beginPath();
+    ctx.arc(cx, cy, d / 2, 0, U.TAU);
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.fill();
+    text(ctx, (name || '?').charAt(0), cx, cy + fs(1), d * 0.40, 'rgba(233,238,245,0.8)', 'center', true);
+  }
+
+  function ellipsis(ctx, str, maxW, size) {
+    if (measure(ctx, str, size) <= maxW) return str;
+    var s = str;
+    while (s.length > 1 && measure(ctx, s + '…', size) > maxW) s = s.substring(0, s.length - 1);
+    return s + '…';
+  }
+
+  function rankRowColor(rank) {
+    if (rank === 1) return C.gold;
+    if (rank === 2) return '#cfd8e3';
+    if (rank === 3) return '#d08a5a';
+    return C.dim;
+  }
+
+  UI.rank = function (g) {
+    var ctx = P.ctx, W = P.W, H = P.H;
+    var Hst = HS.Host;
+    var ui = Hst.rankUI;
+    var local = !!(Hst.adapter && Hst.adapter.localOnly);
+
+    bg(ctx, g, 0.8);
+
+    text(ctx, '排行榜', W * 0.07, H * 0.072, 24, C.text, 'left', true);
+    text(ctx, '无尽模式 · 存活时间' + (local ? '   ·   仅本机记录' : ''), W * 0.07, H * 0.108, 10.5, C.dim, 'left', false);
+
+    /* 周期切换 */
+    var gw = W * 0.86, gx = (W - gw) / 2;
+    var gy = H * 0.137;
+    var gap = fs(6), tw = (gw - gap * 2) / 3, th = fs(32);
+    for (var i = 0; i < Hst.periods.length; i++) {
+      var pd = Hst.periods[i];
+      var sel = ui.period === pd.id;
+      var tx = gx + i * (tw + gap);
+      panel(ctx, tx, gy, tw, th, th / 2,
+        sel ? 'rgba(255,90,60,0.85)' : 'rgba(255,255,255,0.055)',
+        sel ? 'rgba(255,150,120,0.9)' : C.line);
+      text(ctx, pd.name, tx + tw / 2, gy + th / 2 + fs(1), 12, sel ? '#fff' : C.dim, 'center', sel);
+      g.hits.push({ id: 'rank:period:' + pd.id, x: tx, y: gy, w: tw, h: th });
+    }
+
+    /* 榜单：只取前 10，不做滚动 —— 一屏能看完，翻页还得再发请求。
+       行高按可用高度自适应：矮屏不挤、高屏不空，10 行正好铺满中间这段 */
+    var by = H - fs(56);
+    var mh = fs(66);
+    var ly = gy + th + fs(12);
+    var rowH = Math.floor((by - fs(16) - mh - fs(12) - ly - fs(14)) / 10);
+    rowH = U.clamp(rowH, fs(28), fs(40));
+    var lh = rowH * 10 + fs(14);
+    panel(ctx, gx, ly, gw, lh, 14, 'rgba(255,255,255,0.04)', C.line);
+
+    var rows = ui.rows || [];
+    if (ui.loading) {
+      text(ctx, '加载中…', W / 2, ly + lh / 2, 12, C.dim, 'center');
+    } else if (ui.err) {
+      text(ctx, ui.err, W / 2, ly + lh / 2 - fs(14), 11, '#d08a5a', 'center');
+      if (Hst.canRank()) {
+        button(g, ctx, 'rank:retry', W / 2 - fs(52), ly + lh / 2 + fs(6), fs(104), fs(36), '重试', 'ghost', true);
+      }
+    } else if (!rows.length) {
+      text(ctx, local ? '这台设备还没有无尽记录' : '还没有人上榜', W / 2, ly + lh / 2 - fs(10), 12, C.text, 'center');
+      text(ctx, '选一张图、打开无尽模式，撑得越久越靠前', W / 2, ly + lh / 2 + fs(14), 9.5, C.dim, 'center', false);
+    } else {
+      for (var r = 0; r < rows.length && r < 10; r++) {
+        var row = rows[r];
+        var ry = ly + fs(7) + r * rowH + rowH / 2;
+        var mine = !!(ui.my && ui.my.ranked && row.rank === ui.my.rank);
+        if (mine) {
+          panel(ctx, gx + fs(6), ry - rowH / 2 + fs(1), gw - fs(12), rowH - fs(2), fs(8), 'rgba(255,90,60,0.16)', null);
+        }
+        var rc = rankRowColor(row.rank);
+        text(ctx, String(row.rank), gx + fs(21), ry, row.rank <= 3 ? 15 : 12, rc, 'center', row.rank <= 3);
+        headShot(ctx, row.avatar, row.nickname, gx + fs(48), ry, fs(20));
+        text(ctx, ellipsis(ctx, String(row.nickname || '玩家'), gw * 0.42, 11.5),
+          gx + fs(64), ry + fs(1), 11.5, mine ? '#fff' : C.text, 'left', mine);
+        text(ctx, Hst.fmtScore(row.score), gx + gw - fs(16), ry, 12.5,
+          row.rank <= 3 ? C.gold : C.text, 'right', true);
+      }
+    }
+
+    /* 我的名次 */
+    var myY = ly + lh + fs(12);
+    panel(ctx, gx, myY, gw, mh, 14, 'rgba(255,255,255,0.05)', C.line);
+
+    var myTxt = '未上榜', myC = C.text;
+    if (!Hst.canRank()) { myTxt = '未接入'; myC = C.dim; }
+    else if (ui.my && ui.my.ranked) { myTxt = '第 ' + ui.my.rank + ' 名'; myC = C.gold; }
+
+    text(ctx, '我的名次', gx + fs(16), myY + fs(18), 9.5, C.dim, 'left', false);
+    text(ctx, myTxt, gx + fs(16), myY + fs(43), 19, myC, 'left', true);
+
+    var bestS = HS.Save.data.bestEndless || 0;
+    text(ctx, '个人最佳 ' + (bestS > 0 ? Hst.fmtScore(Hst.toScore(bestS)) : '--'),
+      gx + gw - fs(16), myY + fs(19), 10.5, C.dim, 'right', false);
+    var sub = Hst.canRank()
+      ? (ui.myErr || (ui.my && ui.my.ranked
+        ? ('榜单成绩 ' + Hst.fmtScore(ui.my.score))
+        : '打一局无尽模式就能上榜'))
+      : (Hst.rankNote || '当前环境没有排行榜');
+    text(ctx, ellipsis(ctx, sub, gw - fs(140), 9.5), gx + gw - fs(16), myY + fs(44), 9.5,
+      ui.myErr ? '#d08a5a' : C.dim, 'right', false);
+
+    /* 剩下的空地放两行说明，别留一大块黑 */
+    var hy = myY + mh + (by - fs(10) - myY - mh) / 2;
+    text(ctx, local ? '网页版只统计这台设备 · B站 Toy 里是全站榜' : '无尽模式成绩会在结算时自动上榜',
+      W / 2, hy - fs(9), 9.5, 'rgba(139,149,163,0.68)', 'center', false);
+    text(ctx, '撑得越久名次越高 · 同分时先达成的人靠前',
+      W / 2, hy + fs(10), 9.5, 'rgba(139,149,163,0.68)', 'center', false);
+
+    /* 底部按钮 */
+    if (Hst.canRank()) {
+      var bwd = (gw - fs(10)) / 2;
+      button(g, ctx, 'rank:retry', gx, by, bwd, fs(42), '刷新', 'ghost', true);
+      button(g, ctx, 'back', gx + bwd + fs(10), by, bwd, fs(42), '返回', 'ghost', true);
+    } else {
+      button(g, ctx, 'back', gx + gw * 0.25, by, gw * 0.5, fs(42), '返回', 'ghost', true);
+    }
   };
 
   /* ---------------- 入口 ---------------- */
@@ -2002,6 +2182,7 @@
       case 'settings': UI.settings(g); break;
       case 'mapselect': UI.mapSelect(g); break;
       case 'meta': UI.meta(g); break;
+      case 'rank': UI.rank(g); break;
       case 'run': UI.hud(g); break;
       case 'levelup': UI.levelUp(g); break;   // 升级时收起 HUD，避免和标题打架
       case 'lootask': UI.lootAsk(g); break;   // 搜刮翻到主武器：停下来问一句

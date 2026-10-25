@@ -31,7 +31,8 @@ const BROWSERS = [
 ];
 
 const ROOT = path.resolve(__dirname, '..');
-const HTML = path.join(ROOT, 'dist', 'demo', 'index.html');
+/* 直接截单文件构建产物：图集与 BGM 全内联，file:// 下不用起服务 */
+const HTML = path.join(ROOT, 'dist', 'highway-survivors.html');
 const OUT = path.join(ROOT, 'docs', 'screenshots');
 const VIEW = { width: 390, height: 844, deviceScaleFactor: 2 };
 
@@ -433,6 +434,22 @@ const STEPS = [
       return true;
     })()`,
     wait: 700
+  },
+  {
+    name: 'rank',
+    desc: '排行榜：无尽模式存活时间（B站 Toy 是全站榜，网页版只记本机）',
+    act: `(function () {
+      /* 网页版没有联机榜：打开示例名次，只为截图好看（不写存档、不影响线上） */
+      HS.Host.use(HS.HostAdapters.web);
+      HS.Host.adapter.mock = true;
+      HS.P.set('hsdz_rank_local_v1', [{ score: 9800, nickname: '我', t: Date.now() }]);
+      HS.Save.data.bestEndless = 98;
+      HS.Game.state = 'title';
+      HS.Game.openRank('title');
+      HS.Host.loadRank('all', true);
+      return 'rows=' + HS.Host.rankUI.rows.length + ' my=' + JSON.stringify(HS.Host.rankUI.my);
+    })()`,
+    wait: 900
   }
 ];
 

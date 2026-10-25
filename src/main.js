@@ -19,10 +19,17 @@
       Main.booted = true;
 
       P.init();
+      HS.Host.init();
       HS.Input.init();
       HS.Sprites.init();
       HS.Audio.init();
       HS.Game.init();
+
+      /* 宿主无关的"要落盘了"钩子：结算推云、切后台推云都在这里挂 */
+      HS.Host.onHide(function () {
+        HS.Save.flush();
+        HS.Save.pushCloud();
+      });
 
       /* 前后台切换 */
       if (P.isWx) {
@@ -31,7 +38,7 @@
             var g = HS.Game;
             if (g.state === 'run') { g.state = 'paused'; HS.Input.enabled = false; }
             HS.Audio.pauseBgm();
-            HS.Save.flush();
+            HS.Host.fireHide();
           });
         }
         if (wx.onShow) {
@@ -39,6 +46,13 @@
             HS.Audio.resume();
           });
         }
+      } else if (!P.isNode && typeof document !== 'undefined') {
+        /* 浏览器 / B站 Toy：切标签页、切后台、页面卸载都要落盘 */
+        document.addEventListener('visibilitychange', function () {
+          if (document.visibilityState === 'hidden') HS.Host.fireHide();
+        });
+        window.addEventListener('pagehide', function () { HS.Host.fireHide(); });
+        window.addEventListener('beforeunload', function () { HS.Host.fireHide(); });
       }
 
       /* 浏览器调试：1/2/3 选卡，Esc 暂停 */

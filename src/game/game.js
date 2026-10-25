@@ -353,7 +353,7 @@
       /* 背景音乐只做菜单氛围：标题 / 选图 / 研究所 / 设置。
          进局内、暂停、结算一律停 —— 局内的紧张感交给音效，配乐会和枪声打架 */
       var bgmMenu = this.state === 'title' || this.state === 'mapselect' ||
-        this.state === 'meta' || this.state === 'settings';
+        this.state === 'meta' || this.state === 'settings' || this.state === 'rank';
       if (bgmMenu !== this._bgmMenu) {
         this._bgmMenu = bgmMenu;
         HS.Audio.setBgmScene(bgmMenu);
@@ -1930,6 +1930,7 @@
         grade: grade,
         score: Math.round(score),
         win: win,
+        endless: !!run.endless,
         gold: gold,
         scavGold: scavGold,
         clearGold: clearGold,
@@ -1949,6 +1950,25 @@
       HS.Input.enabled = false;
       if (win) HS.Audio.win();
       HS.Save.flush();
+
+      /* 无尽模式才进榜：普通关卡的 6 分钟是固定流程，比不出高下。
+         提交是异步的，结果页先显示"上榜中"，回调把名次补进去 */
+      if (run.endless) HS.Host.submitRun(run);
+      else HS.Save.pushCloud();
+    },
+
+    /* ================= 排行榜 ================= */
+
+    /**
+     * 打开排行榜。数据全部由 HS.Host 提供：
+     * B站 Toy 走平台榜单，微信侧未接入时展示个人最佳，网页走本地记录。
+     */
+    openRank: function (from) {
+      this.rankFrom = from || (this.state === 'result' ? 'result' : 'title');
+      HS.Host.refresh();          // Toy 的 SDK 可能是后加载的
+      HS.Host.loadRank('all', false);
+      this.state = 'rank';
+      HS.Audio.ui();
     },
 
     /* ================= 点击分发 ================= */
@@ -1976,7 +1996,18 @@
       var d = HS.Save.data;
       if (id === 'start') { this.state = 'mapselect'; return; }
       if (id === 'meta') { this.state = 'meta'; this.tab = 'char'; return; }
-      if (id === 'back') { this.state = 'title'; return; }
+      if (id === 'rank') { this.openRank(); return; }
+      if (id.indexOf('rank:period:') === 0) {
+        HS.Host.loadRank(id.substring(12), false);
+        HS.Audio.ui();
+        return;
+      }
+      if (id === 'rank:retry') { HS.Host.loadRank(null, true); HS.Audio.ui(); return; }
+      if (id === 'back') {
+        /* 从结算页进来的，返回时回结算页；否则回标题 */
+        this.state = (this.state === 'rank' && this.rankFrom === 'result') ? 'result' : 'title';
+        return;
+      }
       if (id === 'title') { this.state = 'title'; return; }
       if (id.indexOf('tab:') === 0) { this.tab = id.substring(4); return; }
 
@@ -2150,5 +2181,5 @@
   HS.RUN_TIME = RUN_TIME;
   HS.MAX_WEAPONS = MAX_WEAPONS;
   HS.MAX_PASSIVES = MAX_PASSIVES;
-  HS.VERSION = '1.0.1';
+  HS.VERSION = '1.1.0';
 })();
