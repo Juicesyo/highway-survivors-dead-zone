@@ -534,6 +534,8 @@
   function generate(bx, by) {
     var out = [];
     var desert = (theme === 'desert');
+    /* 锈水高速是裸露立交，安全屋由局内事件临时开放，不生成城市楼群。 */
+    if (theme === 'flood') return out;
     /* 建筑必须完整落在自己的区块里：碰撞查询是按区块取缓存的，
        一旦楼跨到隔壁区块，玩家就能从墙角穿过去 */
     var minX = bx + 4, maxX = bx + BLOCK - 4;

@@ -16,7 +16,7 @@ const Game = HS.Game;
 const runs = parseInt(process.argv[2] || '3', 10);
 const fast = process.argv.indexOf('--fast') >= 0;
 
-const maps = ['highway', 'night', 'desert'];
+const maps = ['highway', 'night', 'desert', 'flood'];
 const stats = [];
 let droppedXp = 0, pickedXp = 0;
 const _kill = Game.killEnemy;

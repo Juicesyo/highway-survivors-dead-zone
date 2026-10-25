@@ -66,7 +66,7 @@
     night: {
       id: 'night', name: '死区之夜', theme: 'street', night: true,
       desc: '同一条路，只是天黑了。手电只照出十几步，枪也打不远。',
-      spawnMul: 1.15, xpMul: 1.12, goldMul: 1.18, hpMul: 1.02, unlockWins: 1, clearGold: 50,
+      spawnMul: 1.15, xpMul: 1.12, goldMul: 1.18, hpMul: 1.08, resist: 0.03, unlockWins: 1, clearGold: 50,
       /* 扫射暴君：远程弹幕型，减伤 20%（bossDmgCut），射程/弹径在 AI 里走 bossType */
       bossId: 'gatling', bossDmgCut: 0.2,
       vision: 84, rangeMul: 0.68,
@@ -75,15 +75,23 @@
     desert: {
       id: 'desert', name: '荒漠公路', theme: 'desert',
       desc: '笔直的路，两边只有沙。路牌锈了，旅馆空了，枪手还在。',
-      spawnMul: 1.05, xpMul: 1.25, goldMul: 1.3, hpMul: 1.02, unlockWins: 2, clearGold: 80,
+      spawnMul: 1.05, xpMul: 1.25, goldMul: 1.3, hpMul: 1.16, resist: 0.05, unlockWins: 2, clearGold: 80,
       /* 猎杀者：速度型刺客 Boss，血厚 + 减伤 20%，技能机制在 AI 里走 bossType */
       bossId: 'stalker', bossDmgCut: 0.2,
       gunmen: 0.18,
       sky: '#2a1d12'
+    },
+    flood: {
+      id: 'flood', name: '锈水高速', theme: 'flood',
+      desc: '立交沉进锈水。浅水拖慢脚步，深水无路，电流不分敌我。',
+      spawnMul: 1.10, xpMul: 1.35, goldMul: 1.4, hpMul: 1.24, resist: 0.08, unlockWins: 3, clearGold: 110,
+      bossId: 'axeboss', bossDmgCut: 0.28,
+      water: true,
+      sky: '#172421'
     }
   };
 
-  HS.Data.mapOrder = ['highway', 'night', 'desert'];
+  HS.Data.mapOrder = ['highway', 'night', 'desert', 'flood'];
 
   /** 局外永久强化 */
   HS.Data.perms = [

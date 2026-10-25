@@ -83,24 +83,39 @@
       full: { count: 10, spin: 1.7, dmg: 1.15 }
     },
     {
-      id: 'railorb', name: '电磁轨道球', rarity: 3, desc: '高压电球缓慢环绕，接触即放电',
-      base: { count: 1, radius: 30, dmg: 15, spin: 2.2, chains: 1 },
-      g: { dmg: 0.2, radius: 1.4 }
+      /* 电磁球的问题一直是"球是点、接触靠运气"：转速慢、判定半径只有 6px，
+         敌人从环上走过去常常整个错过，Lv3 的实测 DPS 和 Lv1 几乎一样。
+         现在给它球体判定（ball）+ 周期过载放电（pulse），接触打不到的由电弧补上。 */
+      id: 'railorb', name: '电磁轨道球', rarity: 3, color: '#9ef0ff', desc: '高压电球环绕，周期过载放电',
+      base: { count: 1, radius: 30, dmg: 13, spin: 2.6, chains: 2, ball: 4, pulse: 2.4, pulseMax: 4 },
+      g: { dmg: 0.2, radius: 1.4, ball: 0.25 },
+      /* 满级裂成两颗，电弧跳到 3 个目标，过载从 4 个目标扩到 6 个、间隔缩到 1.6 秒 */
+      full: { count: 2, chains: 3, radius: 1.1, dmg: 1.2, ball: 7, pulse: 1.6, pulseMax: 6 }
     },
     {
-      id: 'saberring', name: '光剑无人环', rarity: 4, desc: '悬浮光刃围着身体慢慢转',
-      base: { count: 1, radius: 42, dmg: 14, spin: 1.8 },
-      g: { dmg: 0.2, count: 0.4, radius: 1.2 }
+      /* 光剑：判定是"线段"不是"一个点" —— blade 是刃长（px），
+         从环上基点到刃尖整段都能切（见 auto.js 的 orbit 线段判定）。
+         以前只有 1 片 + 点判定，一圈扫下来一半时间够不着人，所以才显得弱。
+         满级 6 把长刃首尾相接，才配得上「无人环」。 */
+      id: 'saberring', name: '光剑无人环', rarity: 4, color: '#8ee9ff',
+      desc: '悬浮光刃围着身体转，刃身整条都在切',
+      base: { count: 3, radius: 42, dmg: 9, spin: 2.6, blade: 16 },
+      g: { dmg: 0.18, count: 0.5, radius: 1.2, spin: 0.03, blade: 1.5 },
+      full: { count: 6, blade: 26, spin: 1.4, dmg: 1.15 }
     },
     {
       id: 'reflectshield', name: '反弹盾牌', rarity: 3, desc: '盾珠扫中敌方子弹会原路弹回，还能撞开丧尸',
       base: { count: 2, radius: 30, dmg: 6, spin: 2.6 },
-      g: { dmg: 0.15, count: 0.4 }
+      g: { dmg: 0.15, count: 0.4 },
+      /* 满级围成一圈盾墙，撞开力度靠接触伤害一起抬 */
+      full: { count: 5, radius: 1.12, dmg: 1.3 }
     },
     {
       id: 'gravitysat', name: '重力卫星', rarity: 4, desc: '重力场把敌人往身边拽，还带持续伤害',
       base: { count: 1, radius: 38, dmg: 5, spin: 2.0, pull: 26 },
-      g: { dmg: 0.16, pull: 4 }
+      g: { dmg: 0.16, pull: 4 },
+      /* 满级两颗对转，吸力更狠 */
+      full: { count: 2, radius: 1.15, dmg: 1.2, pull: 1.45 }
     }
   ]);
 
@@ -162,17 +177,20 @@
       g: { dps: 0.16, radius: 1.3, dur: 0.05 }, effect: 'poison'
     },
     {
-      id: 'flamefountain', name: '火焰喷泉', rarity: 3, desc: '地面喷出火柱，持续灼烧', tags: ['fire'],
+      id: 'flamefountain', name: '火焰喷泉', rarity: 3, color: '#ff8b3d',
+      desc: '地面喷出火柱，持续灼烧', tags: ['fire'],
       base: { cd: 4.5, radius: 40, dps: 13, dur: 3, range: 170 },
       g: { dps: 0.16, radius: 1.2, dur: 0.05 }, effect: 'fire'
     },
     {
-      id: 'frostgen', name: '冰霜发生器', rarity: 3, desc: '大范围降温，冻住整片区域', tags: ['ice'],
+      id: 'frostgen', name: '冰霜发生器', rarity: 3, color: '#9ad0ff',
+      desc: '大范围降温，冻住整片区域', tags: ['ice'],
       base: { cd: 5, radius: 46, dps: 6, dur: 4, slow: 0.45, range: 175 },
       g: { dps: 0.15, radius: 1.3, slow: 0.02 }, effect: 'ice'
     },
     {
-      id: 'blackhole', name: '黑洞发生器', rarity: 5, desc: '把周围的敌人吸成一团再撕碎',
+      id: 'blackhole', name: '黑洞发生器', rarity: 5, color: '#a06cff',
+      desc: '把周围的敌人吸成一团再撕碎',
       base: { cd: 8, radius: 48, dps: 5, dur: 2.5, pull: 46, range: 200 },
       g: { dps: 0.18, radius: 1.3, pull: 6 }, effect: 'gravity'
     }
@@ -223,7 +241,9 @@
     orbit: [
       { id: 'speed', name: '高速自旋', desc: '环绕转速 +25%', maxLvl: 3, mod: { spin: 0.25 } },
       { id: 'power', name: '重刃', desc: '接触伤害 +20%', maxLvl: 3, mod: { dmg: 0.2 } },
-      { id: 'radius', name: '外扩轨道', desc: '环绕半径 +14%', maxLvl: 2, mod: { radius: 0.14 } }
+      { id: 'radius', name: '外扩轨道', desc: '环绕半径 +14%', maxLvl: 2, mod: { radius: 0.14 } },
+      /* 以前环绕类没有任何"变多"的途径，一圈就那几个点，覆盖永远不够 —— 这条补上 */
+      { id: 'extra', name: '增设环体', desc: '环绕体 +1，扫过的缝隙更小', maxLvl: 2, mod: { count: 1 } }
     ],
     ring: [
       { id: 'power', name: '烈焰核心', desc: '持续伤害 +18%', maxLvl: 3, mod: { dps: 0.18 } },

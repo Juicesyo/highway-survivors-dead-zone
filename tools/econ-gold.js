@@ -21,7 +21,7 @@ G.testMode = true;
 const OBS = HS.World;
 const buf = [];
 
-for (const mid of ['highway', 'night', 'desert']) {
+for (const mid of ['highway', 'night', 'desert', 'flood']) {
   G.state = 'title';
   G.startRun(mid, 'soldier');
 

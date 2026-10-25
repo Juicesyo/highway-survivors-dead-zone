@@ -44,10 +44,20 @@
       gold: 2, vomit: true, range: 66, cd: 3.4,
       desc: '胃囊撑到快爆的感染者。靠近后会朝面前一大片矩形呕吐毒液，蓄力时脚下会亮出预警框。'
     },
+    /* 锈水高速专属：全场唯一能横穿深水的东西。
+       别人（玩家、丧尸、载具）只能绕开的深水，是它的近路 —— 沉下去游过来，
+       浮出前水面只剩一道涟漪。别和扑袭者搞混：它不扑，它是"从水里出现"。 */
+    drowner: {
+      id: 'drowner', name: '水鬼', sprite: 'drowner',
+      hp: 26, speed: 34, dmg: 8, r: 5.5, xp: 4, scale: 1,
+      gold: 2, waterborne: true, submerge: true, subCd: 4.2, subDur: 1.5,
+      desc: '泡在锈水里的感染者，水草缠满四肢。浅水里它比谁都快，还能沉下去横穿深水——水面上那道涟漪，就是它正在靠近。'
+    },
     brute: {
       id: 'brute', name: '壮汉', sprite: 'brute',
       hp: 78, speed: 21, dmg: 14, r: 9, xp: 7, scale: 1,
-      gold: 4, desc: '肌肉膨胀的感染者，挨打也照走。'
+      /* 厚皮：实弹/近战/爆炸吃 15% 减免，火焰与持续伤害无视 —— 破甲属性的主要目标 */
+      gold: 4, armor: 0.15, desc: '肌肉膨胀的感染者，挨打也照走。'
     },
     /* 荒漠公路专属：不是感染者，是活人。会拉开距离点射，
        所以它比同血量的丧尸更烦人 —— 得先处理掉，不然一直被点。 */
@@ -60,7 +70,7 @@
     boss: {
       id: 'boss', name: '血肉暴君', sprite: 'boss',
       hp: 460, speed: 30, dmg: 20, r: 15, xp: 120, scale: 2,
-      gold: 150, boss: true, bossType: 'tyrant',
+      gold: 150, boss: true, bossType: 'tyrant', armor: 0.2,
       desc: '高速公路上的屠宰者，整片死区的源头。'
     },
     /* 死区之夜 Boss：抱着加特林的巨尸。它扫射时别往前顶，
@@ -77,6 +87,12 @@
       hp: 2150, speed: 41, dmg: 16, r: 13, xp: 140, scale: 2,
       gold: 150, boss: true, bossType: 'stalker',
       desc: '病毒把它改造成了狼的模样。三段扑杀一环扣一环，狂暴嚎叫还会召来周围所有丧尸——血越少，它越疯狂。'
+    },
+    axeboss: {
+      id: 'axeboss', name: '断堤巨斧', sprite: 'axeboss',
+      hp: 2500, speed: 24, dmg: 22, r: 18, xp: 160, scale: 2.25,
+      gold: 180, boss: true, bossType: 'axeboss', armor: 0.22,
+      desc: '双手各握一柄消防巨斧的巨型丧尸。交叉斩封路，跃劈震出锈水冲击波，还会劈碎桥面与残骸。'
     }
   };
 

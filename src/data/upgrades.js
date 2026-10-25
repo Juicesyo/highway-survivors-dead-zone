@@ -40,7 +40,10 @@
     ],
     beam: [
       { id: 'power', name: '功率超载', desc: '光束伤害 +18%', maxLvl: 3, mod: { dmg: 0.18 } },
-      { id: 'wide', name: '加宽光栅', desc: '光束加宽，穿透 +1', maxLvl: 2, mod: { width: 2, pierce: 1 } },
+      /* 加宽从 2 级放到 3 级：光束的"手感"一半来自宽度，2 级太容易点满 */
+      { id: 'wide', name: '加宽光栅', desc: '光束加宽，穿透 +1', maxLvl: 3, mod: { width: 2, pierce: 1 } },
+      /* 多道光束：单束降一点伤害，换覆盖与"一排格子"的观感 */
+      { id: 'multi', name: '多重光栅', desc: '每次多一道光束，单束伤害 -12%', maxLvl: 2, mod: { count: 1, dmg: -0.12 } },
       { id: 'burnBeam', name: '灼烧光谱', desc: '被光束扫到的敌人开始燃烧', maxLvl: 2, mod: { dmg: 0.05 }, special: 'burn' }
     ],
     rail: [
@@ -214,6 +217,19 @@
       { id: 'power', name: '供弹强化', desc: '全局攻速加成 +8%', maxLvl: 3, mod: { atk: 0.08 } },
       { id: 'motor', name: '高循环电机', desc: '全局攻速加成 +5%', maxLvl: 2, mod: { atk: 0.05 } },
       { id: 'overclock', name: '过载供弹', desc: '全局攻速加成 +12%（一次性）', maxLvl: 1, mod: { atk: 0.12 } }
+    ],
+    /* 液氮喷枪：机制模板的「缓燃配方」写在冰上是错的文案，换成冷媒循环；
+       第三条把「减速幅度」也放进来，让它和火焰喷枪的成长方向彻底分开 */
+    cryo: [
+      { id: 'power', name: '过冷回路', desc: '低温伤害 +14%，减速 +0.03', maxLvl: 3, mod: { dmg: 0.14, slow: 0.03 } },
+      { id: 'wide', name: '广角喷嘴', desc: '喷射距离 +8%，扇面 +0.05', maxLvl: 3, mod: { range: 0.08, arc: 0.05 } },
+      { id: 'fuel', name: '冷媒循环', desc: '冻结持续 +25%，减速 +0.04', maxLvl: 2, mod: { dur: 0.25, slow: 0.04 } }
+    ],
+    /* 龙息喷枪：射程与燃烧时间是它的全部身份，三条分支都往这两处堆 */
+    napalm: [
+      { id: 'power', name: '重油配方', desc: '燃烧伤害 +16%', maxLvl: 3, mod: { dmg: 0.16 } },
+      { id: 'wide', name: '长管喷口', desc: '射程 +10%，扇面 +0.03', maxLvl: 3, mod: { range: 0.1, arc: 0.03 } },
+      { id: 'fuel', name: '延期引信', desc: '燃烧持续 +25%，点燃伤害 +8%', maxLvl: 2, mod: { dur: 0.25, dmg: 0.08 } }
     ]
   };
 

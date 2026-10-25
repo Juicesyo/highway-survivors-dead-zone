@@ -94,6 +94,7 @@
       if (U.dist2(o.x, o.y, x, y) < 46 * 46) return null;
     }
     if (!clearAt(x, y, w, h)) return null;
+    if (HS.Water && !HS.Water.canPlace(x, y, w, h, run)) return null;
 
     var v = {
       isVeh: true, def: def, id: def.id,
@@ -113,7 +114,7 @@
 
   /** 荒漠公路：只有一条纵向的车道，车一律停在路面上 */
   function onDesert() {
-    return !!(V._run && V._run.map && V._run.map.theme === 'desert');
+    return !!(V._run && V._run.map && (V._run.map.theme === 'desert' || V._run.map.theme === 'flood'));
   }
 
   /** 车道中心：把随机点吸附到最近的车道带里，避免车停在街区空地上 */
@@ -141,6 +142,9 @@
     var p = run.p;
     var cx = Math.floor(p.x / CELL), cy = Math.floor(p.y / CELL);
     var rate = D.vehicleSpawn.rate || 0.035;
+    if (D.vehicleSpawn.mapRate && D.vehicleSpawn.mapRate[run.map.id] !== undefined) {
+      rate = D.vehicleSpawn.mapRate[run.map.id];
+    }
 
     for (var gx = cx - 1; gx <= cx + 1; gx++) {
       for (var gy = cy - 1; gy <= cy + 1; gy++) {
@@ -176,7 +180,11 @@
       { x: p.x + 76, y: p.y, v: false },
       { x: p.x - 84, y: p.y, v: false },
       { x: p.x, y: p.y - 88, v: true },
-      { x: p.x, y: p.y + 92, v: true }
+      { x: p.x, y: p.y + 92, v: true },
+      { x: p.x, y: p.y - 136, v: true },
+      { x: p.x, y: p.y + 140, v: true },
+      { x: p.x + 46, y: p.y + 54, v: false },
+      { x: p.x - 52, y: p.y - 58, v: false }
     ];
     for (var i = 0; i < tries.length; i++) {
       var sp = snapToRoad(tries[i].x, tries[i].y, tries[i].v);
@@ -612,7 +620,7 @@
     while (v.mvDir < -Math.PI) v.mvDir += U.TAU;
 
     if (mag > 0.15 && v.stunT <= 0) {
-      var target = def.spd * Math.min(1, mag / 0.85);
+      var target = def.spd * Math.min(1, mag / 0.85) * (HS.Water ? HS.Water.speed(p, run) : 1);
       if (v.speed < target) v.speed = Math.min(target, v.speed + def.accel * dt);
       else v.speed = Math.max(target, v.speed - def.accel * 1.7 * dt);
     } else if (v.stunT <= 0) {
@@ -629,8 +637,11 @@
     var wantDist = v.speed * dt;
     var wasInside = !!HS.Buildings.insideOf(px, py);
 
-    p.x += Math.cos(v.mvDir) * v.speed * dt;
-    p.y += Math.sin(v.mvDir) * v.speed * dt;
+    /* 深水不再是硬墙：车能直接开进去，只是速度掉到 0.32（Water.speed 里给），
+       所以这里不再做"顺岸滑行"的自动避让 —— 想去水里趟就自己开进去。 */
+    var moveDir = v.mvDir;
+    p.x += Math.cos(moveDir) * v.speed * dt;
+    p.y += Math.sin(moveDir) * v.speed * dt;
     resolveBody(v, p);
 
     /* 车体和玩家位置必须是同一个点：渲染 / 耐久条 / 残骸坐标全读 v.x/v.y。

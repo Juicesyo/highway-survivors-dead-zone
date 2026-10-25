@@ -38,12 +38,12 @@
   var DESERT_HALF = ROAD * 0.5;
 
   function isRoad(x, y) {
-    if (theme === 'desert') return Math.abs(x) < DESERT_HALF;
+    if (theme === 'desert' || theme === 'flood') return Math.abs(x) < DESERT_HALF;
     return mod(x, BLOCK) < ROAD || mod(y, BLOCK) < ROAD;
   }
   function isSidewalk(x, y) {
     if (isRoad(x, y)) return false;
-    if (theme === 'desert') return Math.abs(x) < DESERT_HALF + WALK;
+    if (theme === 'desert' || theme === 'flood') return Math.abs(x) < DESERT_HALF + WALK;
     return mod(x, BLOCK) < ROAD + WALK || mod(y, BLOCK) < ROAD + WALK;
   }
   /** 0=车道 1=人行道/路肩 2=街区内部 / 荒野 */
@@ -102,6 +102,13 @@
 
     var ox = cx * CELL + 12 + U.hash(cx, cy, 101 + sd) * (CELL - 24);
     var oy = cy * CELL + 12 + U.hash(cx, cy, 211 + sd) * (CELL - 24);
+    /* 锈水高速：能摆东西的只有桥面 |x|<62 这条带。整块 192 均匀撒点的话
+       一大半落在深水里被拒，路面上就只剩零星几件。 */
+    if (theme === 'flood') {
+      var bx0 = Math.max(cx * CELL, -62), bx1 = Math.min(cx * CELL + CELL, 62);
+      if (bx1 - bx0 < 10) continue;
+      ox = bx0 + U.hash(cx, cy, 101 + sd) * (bx1 - bx0);
+    }
 
     /* 出生点周围留出空地 */
     if (Math.abs(ox) < 135 && Math.abs(oy) < 135) continue;
@@ -109,6 +116,7 @@
     /* 荒漠分区：人造障碍（车壳 / 路牌 / 广告牌…）只出现在路肩附近，
        远处荒野只稀疏地长仙人掌 —— 满地垃圾车不像荒漠 */
     var def;
+    if (theme === 'flood' && HS.Water && HS.Game.run && HS.Water.zone(ox, oy, HS.Game.run) === 2) continue;
     if (theme === 'desert' && Math.abs(ox) - DESERT_HALF > 60) {
       /* 约 16% 的荒野区块有一株仙人掌，其余留白 */
       if (U.hash(cx, cy, 8811 + sd) > 0.16) continue;
@@ -123,27 +131,46 @@
     var vertical;
     var mx = mod(ox, BLOCK), my = mod(oy, BLOCK);
     if (theme === 'desert') {
-      /* 荒漠只有纵向一条路：车壳、路障都顺着路摆，没人会在沙地上横着停车 */
+      /* 荒漠直路：车壳、路障都顺着路摆 */
       vertical = true;
+    } else if (theme === 'flood') {
+      /* 锈水高速：被水冲过的车不会停得整整齐齐 —— 六成顺路，四成横过来 */
+      vertical = U.hash(cx, cy, 9031 + sd) < 0.58;
     } else if (U.hash(cx, cy, 9011 + sd) < 0.3) {
       vertical = U.hash(cx, cy, 9013 + sd) < 0.5;
     } else if (mx < ROAD) vertical = true;
     else if (my < ROAD) vertical = false;
     else vertical = U.hash(cx, cy, 401 + sd) < 0.5;
 
+    /* 会旋转的物件（废弃车辆）一律取竖放帧，朝向交给 ang 随机转 */
+    if (def.spin) vertical = true;
     var frames = (oriented && !vertical) ? def.hFrames : def.vFrames;
     var frame = frames[Math.floor(U.hash(cx, cy, 613 + sd) * frames.length) % frames.length];
     var w = oriented && !vertical ? def.h : def.w;
     var h = oriented && !vertical ? def.w : def.h;
 
+    /* 废弃车辆 360° 朝向：转起来以后压占要按旋转后的包围盒算 */
+    var rot = def.spin ? U.hash(cx, cy, 9053 + sd) * Math.PI * 2 : 0;
+    var aw = w, ah = h;
+    if (rot) {
+      var ca = Math.abs(Math.cos(rot)), sa2 = Math.abs(Math.sin(rot));
+      aw = w * ca + h * sa2;
+      ah = w * sa2 + h * ca;
+    }
+
     /* 别压在建筑上，也别堵住门洞 */
-    if (buildingOverlap(ox, oy, w, h)) continue;
-    if (B.doorBlocked(ox, oy, w, h)) continue;
+    if (buildingOverlap(ox, oy, aw, ah)) continue;
+    if (B.doorBlocked(ox, oy, aw, ah)) continue;
+    /* 水里的道具要留出人行道：外扩 12px 不能碰深水。
+       否则会出现"深水 + 一根管子"把桥面夹成两三像素的死缝，
+       丧尸（和玩家）走到那儿就再也过不去了。 */
+    if (theme === 'flood' && HS.Water && HS.Game && HS.Game.run &&
+        !HS.Water.canPlace(ox, oy, aw + 12, ah + 12, HS.Game.run)) continue;
     /* 别和本区块另一个道具叠在一起 */
     var clash = false;
     for (var ck = 0; ck < out.length; ck++) {
       var q = out[ck];
-      if (Math.abs(q.x - ox) < (q.w + w) / 2 + 8 && Math.abs(q.y - oy) < (q.h + h) / 2 + 8) { clash = true; break; }
+      if (Math.abs(q.x - ox) < (q.w + aw) / 2 + 8 && Math.abs(q.y - oy) < (q.h + ah) / 2 + 8) { clash = true; break; }
     }
     if (clash) continue;
 
@@ -163,6 +190,8 @@
       lootable: !!(def.loot && U.hash(cx, cy, 503 + sd) < def.lootChance),
       looted: false,
       flip: U.hash(cx, cy, 701 + sd) < 0.5,
+      /* ang / hw / hh：旋转矩形的碰撞（旋转车用），ang=0 时等价于 AABB */
+      ang: rot, hw: cw / 2, hh: ch / 2,
       by: oy + h / 2        // 深度排序用（底边）
     };
     out.push(obs);
@@ -226,11 +255,57 @@
     return true;
   }
 
+  /* ---------------- 旋转矩形（会转的废弃车辆） ---------------- */
+
+  /** 小圆是否落在旋转矩形里（o: {x,y,ang,hw,hh}） */
+  function boxHit(x, y, r, o) {
+    var c = Math.cos(o.ang), s = Math.sin(o.ang);
+    var dx = x - o.x, dy = y - o.y;
+    var lx = dx * c + dy * s;
+    var ly = -dx * s + dy * c;
+    return Math.abs(lx) <= o.hw + r && Math.abs(ly) <= o.hh + r;
+  }
+
+  /** 把小圆推出旋转矩形（就地修改 ent）；返回是否发生碰撞 */
+  function pushOutRot(ent, r, o) {
+    var c = Math.cos(o.ang), s = Math.sin(o.ang);
+    var dx = ent.x - o.x, dy = ent.y - o.y;
+    var lx = dx * c + dy * s;
+    var ly = -dx * s + dy * c;
+    var ex = o.hw + r, ey = o.hh + r;
+    if (Math.abs(lx) < ex && Math.abs(ly) < ey) {
+      /* 已经嵌进去了：沿最小穿透轴顶出来 */
+      var px = ex - Math.abs(lx), py = ey - Math.abs(ly);
+      var ox = 0, oy = 0;
+      if (px < py) ox = (lx >= 0 ? px : -px);
+      else oy = (ly >= 0 ? py : -py);
+      ent.x += ox * c - oy * s;
+      ent.y += ox * s + oy * c;
+      return true;
+    }
+    var nx = lx < -o.hw ? -o.hw : (lx > o.hw ? o.hw : lx);
+    var ny = ly < -o.hh ? -o.hh : (ly > o.hh ? o.hh : ly);
+    var ddx = lx - nx, ddy = ly - ny;
+    var d2 = ddx * ddx + ddy * ddy;
+    if (d2 > r * r) return false;
+    var d = Math.sqrt(d2) || 0.0001;
+    var push = (r - d) / d;
+    var wx = ddx * push, wy = ddy * push;
+    ent.x += wx * c - wy * s;
+    ent.y += wx * s + wy * c;
+    return true;
+  }
+
   /** 圆形实体推出建筑墙体 / 家具，再推出实心道具（就地修改 ent） */
-  function resolve(ent, r) {
+  function resolve(ent, r, ox, oy) {
+    var run = HS.Game && HS.Game.run;
     B.resolve(ent, r);
     /* 停着的载具也是实心的（自己开的那辆由载具模块内部跳过） */
     if (HS.Vehicle && HS.Vehicle.resolve) HS.Vehicle.resolve(ent, r);
+    if (HS.Water && run) {
+      HS.Water.resolve(ent, r, ox, oy, run);
+      HS.Water.resolveWrecks(ent, r, ox, oy, run);
+    }
     var cx = Math.floor(ent.x / CELL), cy = Math.floor(ent.y / CELL);
     for (var gx = cx - 1; gx <= cx + 1; gx++) {
       for (var gy = cy - 1; gy <= cy + 1; gy++) {
@@ -238,7 +313,8 @@
         for (var i = 0; i < list.length; i++) {
           var o = list[i];
           if (!o.solid || o.broken) continue;
-          pushOut(ent, r, o.bx0, o.by0, o.bx1, o.by1);
+          if (o.ang) pushOutRot(ent, r, o);
+          else pushOut(ent, r, o.bx0, o.by0, o.bx1, o.by1);
         }
       }
     }
@@ -248,6 +324,10 @@
   function hitBlock(x, y, r, ignoreBld) {
     var bHit = B.hitBlock(x, y, r, ignoreBld);
     if (bHit) return bHit;
+    if (HS.Water && HS.Game.run) {
+      var wHit = HS.Water.hitBlock(x, y, r, HS.Game.run);
+      if (wHit) return wHit;
+    }
 
     var cx = Math.floor(x / CELL), cy = Math.floor(y / CELL);
     for (var gx = cx - 1; gx <= cx + 1; gx++) {
@@ -256,7 +336,8 @@
         for (var i = 0; i < list.length; i++) {
           var o = list[i];
           if (!o.blockBullets || o.broken) continue;
-          if (x >= o.bx0 - r && x <= o.bx1 + r && y >= o.by0 - r && y <= o.by1 + r) return o;
+          if (o.ang ? boxHit(x, y, r, o)
+            : (x >= o.bx0 - r && x <= o.bx1 + r && y >= o.by0 - r && y <= o.by1 + r)) return o;
         }
       }
     }
@@ -266,11 +347,12 @@
   /** 点是否落在建筑 / 实心道具里（出生点纠偏用） */
   function insideSolid(x, y) {
     if (B.insideSolid(x, y)) return true;
+    if (HS.Water && HS.Game.run && HS.Water.insideSolid(x, y, HS.Game.run)) return true;
     var list = chunk(Math.floor(x / CELL), Math.floor(y / CELL));
     for (var i = 0; i < list.length; i++) {
       var o = list[i];
       if (!o.solid || o.broken) continue;
-      if (x >= o.bx0 && x <= o.bx1 && y >= o.by0 && y <= o.by1) return true;
+      if (o.ang ? boxHit(x, y, 0, o) : (x >= o.bx0 && x <= o.bx1 && y >= o.by0 && y <= o.by1)) return true;
     }
     return false;
   }
@@ -307,6 +389,7 @@
   function smash(x, y, r, game) {
     var run = game.run;
     B.smash(x, y, r, game);
+    if (HS.Water) HS.Water.smash(x, y, r, run, 45);
     var cx = Math.floor(x / CELL), cy = Math.floor(y / CELL);
     for (var gx = cx - 1; gx <= cx + 1; gx++) {
       for (var gy = cy - 1; gy <= cy + 1; gy++) {
@@ -352,6 +435,8 @@
     queryRect: queryRect,
     resolve: resolve,
     pushOut: pushOut,
+    pushOutRot: pushOutRot,
+    boxHit: boxHit,
     hitBlock: hitBlock,
     insideSolid: insideSolid,
     nearLoot: nearLoot,

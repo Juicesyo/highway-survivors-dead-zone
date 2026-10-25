@@ -377,10 +377,28 @@
     shoot: function () { A.weapon('pistol'); },
     shotgun: function () { A.noise(0.14, 0.098, 1800); A.tone(200, 0.09, 'sawtooth', 0.042, 80); },
     zap: function () { A.tone(1200, 0.07, 'sawtooth', 0.030, 320); },
+    /* 鱼叉拖拽：铁链绷紧的一声脆响 + 摩擦噪声 */
+    chain: function () { A.noise(0.09, 0.055, 2600); A.tone(980, 0.07, 'square', 0.022, 420); },
+    /* 处决：一声短促的金属切割 + 下滑音，和普通命中音区分开 */
+    execute: function () { A.noise(0.10, 0.075, 3200); A.tone(760, 0.11, 'square', 0.034, 150); },
+    /* 水声：水鬼下潜/出水。小=闷一声就沉下去，大=带水花的破水声 */
+    splash: function (big) {
+      if (big) {
+        A.noise(0.2, 0.075, 900);
+        A.tone(300, 0.18, 'sine', 0.022, 90);
+      } else {
+        A.noise(0.13, 0.05, 1600);
+        A.tone(520, 0.1, 'sine', 0.018, 200);
+      }
+    },
     boom: function () { A.noise(0.28, 0.11, 900); A.tone(90, 0.22, 'triangle', 0.05, 40); },
     hit: function () { A.tone(180, 0.04, 'square', 0.017, 120); },
     /* 喷火：低频噪声的"呼"声。喷火器一开就一直响，所以单独压着（约 -3dB 于参考） */
     flame: function () { A.noise(0.16, 0.088, 700); },
+    /* 液氮：比火更高更细的"嘶"声，截止频率拉高 + 音量压低，免得盖住命中音 */
+    frost: function () { A.noise(0.15, 0.06, 2600); },
+    /* 霜火反应：一声更亮更长的蒸汽爆，带个下沉的音头 */
+    steam: function () { A.noise(0.24, 0.095, 3400); A.tone(420, 0.12, 'triangle', 0.03, 180); },
     pickup: function () { A.tone(880, 0.06, 'triangle', 0.028, 1320); },
     hurt: function () { A.tone(140, 0.12, 'sawtooth', 0.05, 60); A.noise(0.09, 0.05, 600); },
     levelup: function () {

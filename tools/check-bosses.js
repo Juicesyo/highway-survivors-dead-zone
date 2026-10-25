@@ -37,22 +37,34 @@ const hp0 = p.hp;
 for (let f = 0; f < 60 * 25; f++) {
   g.x = 300; g.y = 0;          // 定住 Boss
   p.x = 0; p.y = 0;
+  p.invuln = 0;                // 无敌帧不能挡掉"机制真的能伤人"的采样
+  if (p.hp < p.maxHp) playerHurt = true;
   p.hp = p.maxHp;              // 不让它真打死玩家，只看机制
   Game.run.gems.length = 0;    // 别让升级打断测试
   if (Game.state !== 'run') { Game.state = 'run'; Game.run.choices = []; p.xp = 0; }
   Game.update(1 / 60);
   if (Game.run.ebullets.length > 0) sawBullets = true;
   if (g.gSt === 3) overheated = true;
-  if (g.gSt === 3) break;
 }
-/* 过热判定后让毒打一轮验证掉血 */
-p.invuln = 0; p.hp = p.maxHp;
-const hpA = p.hp;
-for (let f = 0; f < 30; f++) { p.x = 0; p.y = 0; Game.update(1 / 60); }
-playerHurt = p.hp < hpA;
+/* 过热是概率判定（每 10 发 1%~30% 递增），极小概率整个窗口都不触发。
+   为了让这条断言不偶发飘红，补一段把随机数压到 0 的定档重试。 */
+if (!overheated) {
+  const rnd = Math.random;
+  Math.random = function () { return 0; };
+  for (let f = 0; f < 60 * 12 && !overheated; f++) {
+    g.x = 300; g.y = 0;
+    p.x = 0; p.y = 0; p.invuln = 0; p.hp = p.maxHp;
+    Game.run.gems.length = 0;
+    if (Game.state !== 'run') { Game.state = 'run'; Game.run.choices = []; p.xp = 0; }
+    Game.update(1 / 60);
+    if (g.gSt === 3) overheated = true;
+  }
+  Math.random = rnd;
+}
+/* 弹幕伤害在整个扫射窗口内采样；不再只等过热后那 0.5 秒 */
 check('会进入扫射（弹幕出现）', sawBullets, 'gSt=' + g.gSt);
 check('打完会过热罢工', overheated, 'gSt=' + g.gSt);
-check('弹幕真实伤害玩家', playerHurt, '掉了 ' + (hpA - p.hp).toFixed(1));
+check('弹幕真实伤害玩家', playerHurt, playerHurt ? '扫射窗口内掉血' : '未掉血');
 check('减伤 20% 生效', g.dmgCut === 0.2, 'dmgCut=' + g.dmgCut);
 
 /* ---------- 猎杀者 ---------- */
@@ -127,6 +139,45 @@ const cd1 = s.sPounceCd;
 check('损失生命提高攻击频率',
   Math.abs((cd0 - cd1) - 0.2) < 0.02,
   '满血剩 ' + cd0.toFixed(2) + ' → 重伤剩 ' + cd1.toFixed(2) + '（60% 失血应多消耗 0.2）');
+
+/* ---------- 断堤巨斧 ---------- */
+console.log('[断堤巨斧 flood/axeboss]');
+Game.state = 'title';
+Game.startRun('flood', 'soldier');
+p = Game.run.p;
+p.x = 0; p.y = 0;
+const ax = Game.spawnEnemy('axeboss', false, 100, 0);
+ax.boss = true; ax.x = 100; ax.y = 0;
+Game.run.boss = ax;
+const axHp = ax.maxHp;
+let cleaved = false, leaped = false, hurtByBoss = false;
+let maxBreaks = 0, maxHazards = 0, sawSwing = false;
+let sawWind = false, prevASt = 0;
+for (let f = 0; f < 60 * 24; f++) {
+  p.x = 0; p.y = 0; p.invuln = 0;
+  if (p.hp < p.maxHp) hurtByBoss = true;
+  p.hp = p.maxHp;
+  Game.run.gems.length = 0;
+  if (Game.state !== 'run') { Game.state = 'run'; Game.run.choices = []; p.xp = 0; }
+  /* 让 Boss 留在近身与中距离两档，逼它把两招都放出来 */
+  if (f % 240 > 120) { ax.x = 100; ax.y = 0; } else { ax.x = 210; ax.y = 18; }
+  if (f % 180 === 0) { ax.aCleaveCd = 0; ax.aLeapCd = 0; }
+  Game.update(1 / 60);
+  if (ax.aSt === 1) sawWind = true;
+  if (prevASt === 1 && (ax.aSt === 5 || ax.aSt === 0)) cleaved = true;
+  if (ax.aSt === 3) leaped = true;
+  maxBreaks = Math.max(maxBreaks, (Game.run.breaks || []).length);
+  maxHazards = Math.max(maxHazards, Game.run.waterHazards.length);
+  if (ax.aSt === 5) sawSwing = true;
+  prevASt = ax.aSt;
+}
+check('巨斧 Boss 血量高于血肉暴君', axHp > 2000, Math.round(axHp));
+check('交叉斩有蓄力预警', sawWind);
+check('交叉斩有挥砍收势动作', sawSwing);
+check('交叉斩会把地面砸烂（留伤痕）', cleaved && maxBreaks > 0, '伤痕=' + maxBreaks);
+check('跃劈会砸出地面破坏圈', leaped && maxBreaks > 0, '伤痕=' + maxBreaks);
+check('地形破坏不会挖出深水', maxHazards === 0, '深水坑=' + maxHazards);
+check('Boss 招式能真实伤到玩家', hurtByBoss);
 
 console.log('\n' + (bad === 0 ? '全部通过 ✓' : bad + ' 处问题 ✗'));
 process.exit(bad ? 1 : 0);

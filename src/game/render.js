@@ -1016,9 +1016,149 @@
     }
   };
 
+  /* 锈水高速：柏油立交上覆盖浑浊积水。每帧只画可视区，水面反光带轻微流动。 */
+  R.drawFlood = function (b, run) {
+    if (!run.map.water) return;
+    var tile = 16;
+    var x0 = Math.floor(P.camX / tile) * tile - tile;
+    var y0 = Math.floor(P.camY / tile) * tile - tile;
+    var x1 = P.camX + P.VW + tile, y1 = P.camY + P.VH + tile;
+    for (var y = y0; y < y1; y += tile) {
+      for (var x = x0; x < x1; x += tile) {
+        var z = HS.Water.zone(x + 8, y + 8, run);
+        if (!z) continue;
+        var n = U.hash(x / tile, y / tile, 8819);
+        b.fillStyle = z === 2 ? (n < 0.5 ? '#173b3a' : '#1b4240') : 'rgba(60,86,70,0.72)';
+        b.fillRect(x, y, tile + 1, tile + 1);
+        /* 像素水面反光：短横线错位排列，不做平滑渐变。 */
+        if (n < 0.34) {
+          var drift = Math.round(Math.sin(run.t * 1.7 + n * 20) * 3);
+          b.fillStyle = z === 2 ? 'rgba(135,183,163,0.22)' : 'rgba(197,190,139,0.24)';
+          b.fillRect(x + 2 + drift, y + 4 + ((n * 9) | 0), 5 + ((n * 17) % 7), 1);
+          b.fillRect(x + 7 - drift, y + 11, 3, 1);
+        }
+        /* 水草丛只长在浅水边缘，避免深水区看起来像能站。 */
+        if (z === 1 && n > 0.84) {
+          b.strokeStyle = '#496544'; b.lineWidth = 1;
+          b.beginPath();
+          b.moveTo(x + 5, y + 14); b.lineTo(x + 3, y + 7);
+          b.moveTo(x + 6, y + 14); b.lineTo(x + 9, y + 6);
+          b.moveTo(x + 7, y + 14); b.lineTo(x + 7, y + 8);
+          b.stroke();
+        }
+      }
+    }
+    for (var i = 0; i < run.waterHazards.length; i++) {
+      var h = run.waterHazards[i];
+      b.fillStyle = 'rgba(8,28,31,0.48)';
+      b.beginPath(); b.arc(h.x, h.y, h.r, 0, U.TAU); b.fill();
+      b.strokeStyle = 'rgba(113,164,151,0.35)'; b.lineWidth = 1;
+      b.beginPath(); b.arc(h.x, h.y, h.r - 2, 0, U.TAU); b.stroke();
+    }
+    if (run.pumpT > 0) {
+      b.strokeStyle = 'rgba(130,220,205,0.58)'; b.lineWidth = 2;
+      b.beginPath(); b.arc(run.pumpX, run.pumpY, run.pumpR * (0.96 + Math.sin(run.t * 5) * 0.02), 0, U.TAU); b.stroke();
+      b.fillStyle = '#557d70'; b.fillRect(run.pumpX - 7, run.pumpY - 5, 14, 10);
+      b.fillStyle = '#b8d9c9'; b.fillRect(run.pumpX - 4, run.pumpY - 8, 8, 3);
+    }
+    if (run.safeT > 0) {
+      var sx = run.safeX, sy = run.safeY, sr = run.safeR;
+      /* 桥下安全屋：四根桥墩 + 半透明桥板，圈只是补给范围。 */
+      b.fillStyle = 'rgba(37,49,45,0.38)';
+      b.fillRect(sx - sr * 0.58, sy - sr * 0.72, sr * 1.16, sr * 1.44);
+      b.strokeStyle = 'rgba(137,155,142,0.55)'; b.lineWidth = 2;
+      b.strokeRect(sx - sr * 0.58, sy - sr * 0.72, sr * 1.16, sr * 1.44);
+      b.fillStyle = '#394a42';
+      for (var px2 = -1; px2 <= 1; px2 += 2) {
+        for (var py2 = -1; py2 <= 1; py2 += 2) {
+          b.fillRect(sx + px2 * sr * 0.54 - 3, sy + py2 * sr * 0.66 - 3, 6, 6);
+        }
+      }
+      b.fillStyle = 'rgba(240,201,110,0.07)';
+      b.beginPath(); b.arc(sx, sy, sr, 0, U.TAU); b.fill();
+      b.strokeStyle = 'rgba(255,215,125,0.68)'; b.lineWidth = 2;
+      b.setLineDash([5, 4]); b.beginPath(); b.arc(sx, sy, sr, 0, U.TAU); b.stroke(); b.setLineDash([]);
+      b.fillStyle = '#e8c66f'; b.fillRect(sx - 9, sy - sr * 0.78, 18, 3);
+    }
+  };
+
+  /**
+   * 巨斧砸烂的地面：不规则的碎土坑 + 放射裂纹 + 崩出去的石块。
+   * 它只是伤痕，不改通行 —— 玩家能踩着走过去，但一眼看得出这里被砸过。
+   */
+  R.drawBreaks = function (b, run) {
+    var list = run.breaks;
+    if (!list || !list.length) return;
+    for (var i = 0; i < list.length; i++) {
+      var g = list[i];
+      if (g.x < P.camX - 90 || g.x > P.camX + P.VW + 90 ||
+          g.y < P.camY - 90 || g.y > P.camY + P.VH + 90) continue;
+      var fade = Math.min(1, g.life / 4);
+      var r = g.r;
+      var seedX = Math.round(g.x), seedY = Math.round(g.y);
+      b.save();
+      b.globalAlpha = 0.9 * fade;
+      /* 外圈扬尘：没有它，坑会读成一团黑影 */
+      b.fillStyle = 'rgba(122,106,80,0.30)';
+      b.beginPath();
+      b.ellipse ? b.ellipse(g.x, g.y + 2, r * 1.28, r * 0.92, 0, 0, U.TAU)
+        : b.arc(g.x, g.y + 2, r * 1.1, 0, U.TAU);
+      b.fill();
+      /* 坑底：边缘用 hash 抖出锯齿，避免画成一枚圆章 */
+      b.fillStyle = '#2a231b';
+      b.beginPath();
+      for (var k = 0; k <= 12; k++) {
+        var a = k / 12 * U.TAU;
+        var jr = r * (0.80 + 0.22 * U.hash(seedX + k * 7, seedY, 991));
+        var px = g.x + Math.cos(a) * jr;
+        var py = g.y + Math.sin(a) * jr * 0.7;
+        if (k === 0) b.moveTo(px, py); else b.lineTo(px, py);
+      }
+      b.closePath(); b.fill();
+      /* 里层更深的一块，做出"被砸凹"的层次 */
+      b.fillStyle = 'rgba(14,11,8,0.55)';
+      b.beginPath();
+      b.arc(g.x, g.y + 1, r * 0.52, 0, U.TAU);
+      b.fill();
+      /* 放射裂纹：暗缝 + 一道受光的高光边 */
+      b.strokeStyle = 'rgba(16,12,9,0.8)';
+      b.lineWidth = 1.4;
+      for (var c = 0; c < 6; c++) {
+        var ca = (c / 6) * U.TAU + (g.seed || 0) * 6.283;
+        var len = r * (0.8 + 0.6 * U.hash(c, seedX, 771));
+        b.beginPath();
+        b.moveTo(g.x + Math.cos(ca) * r * 0.3, g.y + Math.sin(ca) * r * 0.2);
+        b.lineTo(g.x + Math.cos(ca) * len, g.y + Math.sin(ca) * len * 0.7);
+        b.stroke();
+        if (c % 2 === 0) {
+          b.strokeStyle = 'rgba(158,140,110,0.30)';
+          b.beginPath();
+          b.moveTo(g.x + Math.cos(ca) * r * 0.5, g.y + Math.sin(ca) * r * 0.35);
+          b.lineTo(g.x + Math.cos(ca) * len * 0.9, g.y + Math.sin(ca) * len * 0.62);
+          b.stroke();
+          b.strokeStyle = 'rgba(16,12,9,0.8)';
+        }
+      }
+      /* 崩到外圈的石块：一两块大的 + 几粒小的 */
+      for (var s2 = 0; s2 < 7; s2++) {
+        var ha = U.hash(s2 * 13, seedX, 3301) * U.TAU;
+        var hr = r * (0.8 + 0.65 * U.hash(s2 * 7, seedY, 4409));
+        var bx = g.x + Math.cos(ha) * hr;
+        var by = g.y + Math.sin(ha) * hr * 0.7;
+        b.fillStyle = s2 % 3 === 0 ? '#6b5e4c' : (s2 % 3 === 1 ? '#4a4034' : '#332c22');
+        b.fillRect(bx, by, s2 % 2 ? 3 : 2, 2);
+        if (s2 < 2) {
+          b.fillStyle = '#1b1611';
+          b.fillRect(bx + 0.5, by + 2, 3, 1);
+        }
+      }
+      b.restore();
+    }
+  };
+
   R.ground = function (b, theme, cx, cy, vw, vh) {
     if (theme === 'street') { R.street(b, cx, cy, vw, vh); return; }
-    if (theme === 'desert') { R.desert(b, cx, cy, vw, vh); return; }
+    if (theme === 'desert' || theme === 'flood') { R.desert(b, cx, cy, vw, vh); return; }
     var x0 = Math.floor(cx / 48) * 48 - 48;
     var y0 = Math.floor(cy / 48) * 48 - 48;
     var x1 = cx + vw + 48;
@@ -1237,6 +1377,8 @@
 
     /* 地面 */
     R.ground(b, run.map.theme, P.camX, P.camY, P.VW, P.VH);
+    R.drawFlood(b, run);
+    R.drawBreaks(b, run);
 
     /* 地面污渍（低配模式直接跳过，屏幕上通常有一两百摊） */
     var i;
@@ -1273,6 +1415,28 @@
         continue;
       }
 
+      /* 烟幕：三层灰云缓慢翻滚 + 一圈淡淡的边界。
+         以前它走的是火池通用分支，画出来是红橙色的圆 —— 玩家会以为那是燃烧地面，
+         而它其实是"挡远程的烟" */
+      if (pool.smoke) {
+        var sFade = Math.min(1, pool.life / 0.5);
+        for (var sl = 0; sl < 3; sl++) {
+          var srr = pool.r * (0.66 + sl * 0.15);
+          var sa = (0.11 - sl * 0.025) * sFade;
+          if (sa <= 0) continue;
+          b.fillStyle = 'rgba(178,188,198,' + sa.toFixed(3) + ')';
+          b.beginPath();
+          b.arc(pool.x + Math.sin(run.t * 0.9 + sl * 2.1 + i) * (3 + sl * 2),
+            pool.y + Math.cos(run.t * 0.7 + sl * 1.7 + i) * (2 + sl * 2),
+            srr, 0, U.TAU);
+          b.fill();
+        }
+        b.strokeStyle = 'rgba(200,210,220,' + (0.13 * sFade).toFixed(3) + ')';
+        b.lineWidth = 1;
+        b.beginPath(); b.arc(pool.x, pool.y, pool.r - 1, 0, U.TAU); b.stroke();
+        continue;
+      }
+
       var pt = pool.life / pool.max;
       var pulse = 0.85 + 0.15 * Math.sin(run.t * 11 + i);
       var pr = pool.r * (0.9 + 0.1 * pt) * pulse;
@@ -1288,15 +1452,23 @@
     for (i = 0; i < run.gems.length; i++) R.drawGem(b, run.gems[i]);
     for (i = 0; i < run.drops.length; i++) R.drawDrop(b, run.drops[i]);
 
-    /* 玩家脚下的光，夜里更容易定位 */
-    b.fillStyle = 'rgba(255,205,140,0.10)';
-    b.beginPath(); b.arc(p.x, p.y + 3, 20, 0, U.TAU); b.fill();
+    /* 玩家脚下的光，同时就是「经验拾取范围」的指示圈。
+       以前这里写死 20px，点「拾取范围」圈一点变化都没有，玩家会以为卡是废的。
+       外圈直接读 p.magnet（和 combat.js 里真正判定的半径是同一个值），
+       边界补一道细环，涨了多少一眼能看出来。 */
+    var mgR = p.magnet || 44;
+    b.fillStyle = 'rgba(255,205,140,0.045)';
+    b.beginPath(); b.arc(p.x, p.y + 3, mgR, 0, U.TAU); b.fill();
+    b.strokeStyle = 'rgba(255,225,185,0.16)';
+    b.lineWidth = 1;
+    b.beginPath(); b.arc(p.x, p.y + 3, mgR - 0.5, 0, U.TAU); b.stroke();
     b.fillStyle = 'rgba(255,235,200,0.07)';
     b.beginPath(); b.arc(p.x, p.y + 3, 11, 0, U.TAU); b.fill();
 
     /* ---- 障碍物：取可视范围 + 余量 ---- */
     var obsBuf = this._obs || (this._obs = []);
     HS.World.queryRect(P.camX - 60, P.camY - 80, P.camX + P.VW + 60, P.camY + P.VH + 80, obsBuf);
+    if (HS.Water) HS.Water.query(P.camX - 60, P.camY - 80, P.camX + P.VW + 60, P.camY + P.VH + 80, run, obsBuf);
     var bBuf = this._bld || (this._bld = []);
     HS.World.buildingsInRect(P.camX - 80, P.camY - 110, P.camX + P.VW + 80, P.camY + P.VH + 110, bBuf);
 
@@ -1359,6 +1531,9 @@
         b.fillRect(Math.round(so.x - sw), Math.round(so.y + so.r * 0.7), Math.round(sw * 2), 2);
       }
     }
+
+    /* 元素光锥铺在地面（画在角色之前，免得盖住脸和枪） */
+    if (!p.veh) R.drawFlameCone(b, p, run);
 
     for (i = 0; i < list.length; i++) {
       var it = list[i];
@@ -1449,12 +1624,31 @@
             be.y < P.camY - 160 || be.y > P.camY + P.VH + 120) continue;
         b.fillStyle = 'rgba(255,40,40,0.10)';
         b.beginPath(); b.arc(be.x, be.y, be.r * 1.8, 0, U.TAU); b.fill();
-        R.drawActor(b, be.spriteName || 'boss', be.x, be.y - 4, be.scale, be.anim, be.gait,
-          be.lean, be.hitSprite || 'boss_hit', Math.min(0.2, be.flash * 0.24));
+        /* 巨斧的起手/收势也要有身体动作：蓄力时往后仰、砍出去时往前压 */
+        var bLean = 0;
+        if (be.def && be.def.bossType === 'axeboss') {
+          if (be.aSt === 1) bLean = -0.16 * (1 - Math.max(0, be.aT) / 0.68);
+          else if (be.aSt === 5) bLean = 0.26 * (1 - Math.max(0, be.aT) / 0.26);
+          else if (be.aSt === 4) bLean = 0.10 * Math.max(0, Math.min(1, be.aT / 0.72));
+        }
+        if (bLean) {
+          b.save();
+          b.translate(be.x, be.y + 2);
+          b.rotate(bLean);
+          b.translate(-be.x, -(be.y + 2));
+          R.drawActor(b, be.spriteName || 'boss', be.x, be.y - 4 - (be.airH || 0), be.scale, be.anim, be.gait,
+            be.lean, be.hitSprite || 'boss_hit', Math.min(0.2, be.flash * 0.24));
+          b.restore();
+        } else {
+          R.drawActor(b, be.spriteName || 'boss', be.x, be.y - 4 - (be.airH || 0), be.scale, be.anim, be.gait,
+            be.lean, be.hitSprite || 'boss_hit', Math.min(0.2, be.flash * 0.24));
+        }
+        R.drawStatus(b, be, run.t);
         /* 点阵里那挺横抱的加特林在 32x36 的格子里糊成一坨，玩家认不出是枪，
            就会觉得"它没拿武器却在射子弹"。这里按瞄准角每帧补画一挺转管机炮，
            枪口位置和 combat.js 的出弹点完全一致。 */
         if (be.def && be.def.bossType === 'gatling') R.drawBossGatling(b, be, p);
+        if (be.def && be.def.bossType === 'axeboss') R.drawBossAxes(b, be, p);
       }
     }
 
@@ -1946,15 +2140,90 @@
       if (dv.dead) continue;
 
       if (dv.kind === 'zone') {
-        var pulse = 0.8 + 0.2 * Math.sin(run.t * 3 + i);
-        b.globalAlpha = 0.10 * pulse;
-        b.fillStyle = dv.color || '#8ce99a';
-        b.beginPath(); b.arc(dv.x, dv.y, dv.r, 0, U.TAU); b.fill();
-        b.globalAlpha = 0.42 * pulse;
-        b.strokeStyle = dv.color || '#8ce99a';
-        b.lineWidth = 1;
-        b.beginPath(); b.arc(dv.x, dv.y, dv.r, 0, U.TAU); b.stroke();
-        b.globalAlpha = 1;
+        /* 区域型以前是"一个圆 + 一圈描边"，四种装置只靠颜色区分，
+           而黑洞/火柱/冰霜的颜色又都继承了同一个分组色（绿色）——
+           看上去和毒雾完全一样。现在每种装置单独画形状。 */
+        var zt = run.t, zr = dv.r;
+        var zFade = Math.max(0, Math.min(1, dv.life / 0.6));
+
+        if (dv.gearId === 'blackhole') {
+          /* 黑洞：紫黑吸积盘 + 向内收的碎屑 + 纯黑内核（没有任何"雾"的感觉） */
+          for (var bg2 = 0; bg2 < 3; bg2++) {
+            b.fillStyle = 'rgba(70,38,120,' + ((0.08 + bg2 * 0.035) * zFade).toFixed(3) + ')';
+            b.beginPath(); b.arc(dv.x, dv.y, zr * (0.95 - bg2 * 0.19), 0, U.TAU); b.fill();
+          }
+          b.strokeStyle = 'rgba(206,168,255,' + (0.55 * zFade).toFixed(3) + ')';
+          b.lineWidth = 1.5;
+          for (var sw = 0; sw < 2; sw++) {
+            var swa = zt * 2.6 + sw * 3.14;
+            b.beginPath(); b.arc(dv.x, dv.y, zr * 0.56, swa, swa + 1.85); b.stroke();
+          }
+          for (var sp2 = 0; sp2 < 6; sp2++) {
+            var sph = (zt * 0.85 + sp2 / 6) % 1;
+            var srad = zr * (1 - sph * 0.75);
+            var sang = zt * 3.2 + sp2 * 1.047;
+            b.fillStyle = 'rgba(212,182,255,' + (0.55 * sph * zFade).toFixed(3) + ')';
+            b.fillRect(Math.round(dv.x + Math.cos(sang) * srad) - 1,
+              Math.round(dv.y + Math.sin(sang) * srad) - 1, 2, 2);
+          }
+          b.fillStyle = 'rgba(4,3,8,' + (0.88 * zFade).toFixed(3) + ')';
+          b.beginPath(); b.arc(dv.x, dv.y, zr * 0.3, 0, U.TAU); b.fill();
+          b.strokeStyle = 'rgba(232,206,255,' + (0.5 * zFade).toFixed(3) + ')';
+          b.lineWidth = 1;
+          b.beginPath(); b.arc(dv.x, dv.y, zr * 0.3 + 1.5, 0, U.TAU); b.stroke();
+        } else if (dv.gearId === 'poisongas') {
+          /* 毒雾：几团滚动的绿雾，边界故意做软（这才是"雾"） */
+          for (var pg = 0; pg < 4; pg++) {
+            var pga = zt * 0.6 + pg * 1.9;
+            var pgr = zr * (0.5 + 0.1 * Math.sin(zt * 1.7 + pg));
+            b.fillStyle = 'rgba(126,200,160,' + ((0.09 - pg * 0.012) * zFade).toFixed(3) + ')';
+            b.beginPath();
+            b.arc(dv.x + Math.cos(pga) * zr * 0.26, dv.y + Math.sin(pga * 1.3) * zr * 0.2,
+              pgr, 0, U.TAU);
+            b.fill();
+          }
+        } else if (dv.gearId === 'flamefountain') {
+          /* 火柱：暖色三层 + 上窜火星 */
+          var fpk = 0.85 + 0.15 * Math.sin(zt * 9);
+          b.fillStyle = 'rgba(255,80,20,' + (0.12 * zFade).toFixed(3) + ')';
+          b.beginPath(); b.arc(dv.x, dv.y, zr, 0, U.TAU); b.fill();
+          b.fillStyle = 'rgba(255,150,50,' + (0.15 * zFade).toFixed(3) + ')';
+          b.beginPath(); b.arc(dv.x, dv.y, zr * 0.66 * fpk, 0, U.TAU); b.fill();
+          b.fillStyle = 'rgba(255,225,130,' + (0.20 * zFade).toFixed(3) + ')';
+          b.beginPath(); b.arc(dv.x, dv.y, zr * 0.3 * fpk, 0, U.TAU); b.fill();
+          b.fillStyle = 'rgba(255,200,90,0.9)';
+          for (var em = 0; em < 5; em++) {
+            var lift = (zt * 26 + em * 13) % (zr * 0.9);
+            b.fillRect(Math.round(dv.x - 6 + em * 3 + Math.sin(zt * 6 + em) * 2),
+              Math.round(dv.y + zr * 0.3 - lift), 2, 2);
+          }
+        } else if (dv.gearId === 'frostgen') {
+          /* 冰霜：淡蓝底 + 放射冰晶，轮廓是"尖"的 */
+          b.fillStyle = 'rgba(140,210,255,' + (0.10 * zFade).toFixed(3) + ')';
+          b.beginPath(); b.arc(dv.x, dv.y, zr, 0, U.TAU); b.fill();
+          b.strokeStyle = 'rgba(214,242,255,' + (0.45 * zFade).toFixed(3) + ')';
+          b.lineWidth = 1;
+          for (var fs = 0; fs < 8; fs++) {
+            var fsa = fs * 0.785 + zt * 0.25;
+            var r0 = zr * 0.72, r1 = zr * (0.92 + 0.06 * Math.sin(zt * 3 + fs));
+            b.beginPath();
+            b.moveTo(dv.x + Math.cos(fsa) * r0, dv.y + Math.sin(fsa) * r0);
+            b.lineTo(dv.x + Math.cos(fsa) * r1, dv.y + Math.sin(fsa) * r1);
+            b.stroke();
+          }
+          b.fillStyle = 'rgba(235,250,255,' + (0.14 * zFade).toFixed(3) + ')';
+          b.beginPath(); b.arc(dv.x, dv.y, zr * 0.4, 0, U.TAU); b.fill();
+        } else {
+          var pulse = 0.8 + 0.2 * Math.sin(run.t * 3 + i);
+          b.globalAlpha = 0.10 * pulse;
+          b.fillStyle = dv.color || '#8ce99a';
+          b.beginPath(); b.arc(dv.x, dv.y, dv.r, 0, U.TAU); b.fill();
+          b.globalAlpha = 0.42 * pulse;
+          b.strokeStyle = dv.color || '#8ce99a';
+          b.lineWidth = 1;
+          b.beginPath(); b.arc(dv.x, dv.y, dv.r, 0, U.TAU); b.stroke();
+          b.globalAlpha = 1;
+        }
       } else if (dv.kind === 'mine') {
         b.fillStyle = '#3a3a2a';
         b.fillRect(dv.x - 2, dv.y - 1, 4, 3);
@@ -1976,25 +2245,52 @@
         b.fillStyle = 'rgba(255,209,102,' + (0.15 + dd * 0.35).toFixed(2) + ')';
         b.beginPath(); b.arc(dv.x, dv.y, (dv.r || 30) * dd, 0, U.TAU); b.fill();
       } else if (dv.kind === 'turret') {
+        /* 部署型以前五种共用一个"方机身 + 一根炮管"，只有喷火口多了个橙点。
+           现在按 gearId 分开画：弩机没有炮管、电磁炮台是长轨、火箭炮塔带战斗部。 */
+        var gid = dv.gearId;
+        var tgt = HS.Game.nearest(dv.x, dv.y, 200);
+        var tang = tgt ? Math.atan2(tgt.y - dv.y, tgt.x - dv.x) : (dv.ang || 0);
         b.fillStyle = 'rgba(0,0,0,0.28)';
-        b.fillRect(dv.x - 4, dv.y + 2, 8, 2);
-        b.fillStyle = '#4a515c';
-        b.fillRect(dv.x - 4, dv.y - 5, 8, 7);
-        b.fillStyle = '#9aa6b4';
-        b.fillRect(dv.x - 3, dv.y - 5, 6, 2);
-        b.fillStyle = dv.gearId === 'flamenozzle' ? '#ff8b3d' : '#2b2f36';
-        b.fillRect(dv.x - 1, dv.y - 4, 2, 2);
-        /* 炮管朝最近的敌人 */
-        var tgt = HS.Game.nearest(dv.x, dv.y, 160);
-        var ang = tgt ? Math.atan2(tgt.y - dv.y, tgt.x - dv.x) : (dv.ang || 0);
-        b.save();
-        b.translate(dv.x, dv.y - 2);
-        b.rotate(ang);
-        b.fillStyle = '#39404a';
-        b.fillRect(0, -1, 7, 2);
-        b.fillStyle = '#828d9c';
-        b.fillRect(0, -1, 5, 1);
-        b.restore();
+        b.fillRect(dv.x - 5, dv.y + 2, 10, 2);
+
+        if (gid === 'autocrossbow') {
+          b.fillStyle = '#4a515c'; b.fillRect(dv.x - 3, dv.y - 5, 6, 7);
+          b.fillStyle = '#8a95a3'; b.fillRect(dv.x - 3, dv.y - 6, 6, 2);
+          b.save(); b.translate(dv.x, dv.y - 2); b.rotate(tang);
+          b.fillStyle = '#6b7178'; b.fillRect(1, -5, 1, 10);
+          b.fillStyle = '#b9c2cb'; b.fillRect(1, -6, 1, 1); b.fillRect(1, 5, 1, 1);
+          b.fillStyle = '#39404a'; b.fillRect(0, -0.5, 9, 1);
+          b.restore();
+        } else if (gid === 'railturret') {
+          b.fillStyle = '#3b4450'; b.fillRect(dv.x - 3, dv.y - 6, 6, 8);
+          b.fillStyle = '#7ec8ff'; b.fillRect(dv.x - 1, dv.y - 5, 2, 2);
+          b.save(); b.translate(dv.x, dv.y - 2); b.rotate(tang);
+          b.fillStyle = '#2a3038'; b.fillRect(0, -1.5, 13, 3);
+          b.fillStyle = '#6fd6ff'; b.fillRect(9, -0.5, 4, 1);
+          b.restore();
+        } else if (gid === 'rocketturret') {
+          b.fillStyle = '#4d5560'; b.fillRect(dv.x - 5, dv.y - 6, 10, 8);
+          b.fillStyle = '#9aa6b4'; b.fillRect(dv.x - 4, dv.y - 6, 8, 2);
+          b.save(); b.translate(dv.x, dv.y - 2); b.rotate(tang);
+          b.fillStyle = '#39404a'; b.fillRect(0, -2, 9, 4);
+          b.fillStyle = '#ffd166'; b.fillRect(9, -1.5, 3, 3);
+          b.restore();
+        } else if (gid === 'flamenozzle') {
+          b.fillStyle = '#5a4a3a'; b.fillRect(dv.x - 5, dv.y - 4, 10, 6);
+          b.fillStyle = '#8a6a4a'; b.fillRect(dv.x - 4, dv.y - 4, 8, 1);
+          b.save(); b.translate(dv.x, dv.y - 1); b.rotate(tang);
+          b.fillStyle = '#39404a'; b.fillRect(0, -1.5, 6, 3);
+          b.fillStyle = '#ff8b3d'; b.fillRect(6, -2, 2, 4);
+          b.restore();
+        } else {
+          b.fillStyle = '#4a515c'; b.fillRect(dv.x - 4, dv.y - 5, 8, 7);
+          b.fillStyle = '#9aa6b4'; b.fillRect(dv.x - 3, dv.y - 5, 6, 2);
+          b.fillStyle = '#2b2f36'; b.fillRect(dv.x - 1, dv.y - 4, 2, 2);
+          b.save(); b.translate(dv.x, dv.y - 2); b.rotate(tang);
+          b.fillStyle = '#39404a'; b.fillRect(0, -1, 7, 2);
+          b.fillStyle = '#828d9c'; b.fillRect(0, -1, 5, 1);
+          b.restore();
+        }
       }
 
       /* 耐久条：布置型的核心状态，必须一眼看得见（红了就是快被拆了） */
@@ -2021,16 +2317,34 @@
         var fy = a.y === undefined ? p.y - 12 : a.y;
         b.fillStyle = 'rgba(0,0,0,0.25)';
         b.fillRect(fx - 3, fy + 6, 6, 1);
-        b.fillStyle = '#3e4b57';
-        b.fillRect(fx - 3, fy - 2, 6, 4);
-        b.fillStyle = '#8ecae6';
-        b.fillRect(fx - 2, fy - 2, 2, 2);
-        b.fillStyle = 'rgba(255,255,255,0.6)';
-        b.fillRect(fx + 1, fy - 1, 1, 1);
-        /* 旋翼：两帧闪烁 */
-        b.fillStyle = Math.sin(run.t * 30 + i) > 0 ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.12)';
-        b.fillRect(fx - 6, fy - 4, 4, 1);
-        b.fillRect(fx + 2, fy - 4, 4, 1);
+        if (def.id === 'floatinggun') {
+          /* 浮游炮：一个小机炮，枪口跟着目标转（原来和无人机画得一模一样） */
+          b.fillStyle = '#39404a'; b.fillRect(fx - 3, fy - 2, 6, 4);
+          b.fillStyle = '#9fd8f5'; b.fillRect(fx - 2, fy - 2, 4, 1);
+          var ft = HS.Game.nearest(fx, fy, 170);
+          var fa = ft ? Math.atan2(ft.y - fy, ft.x - fx) : 0;
+          b.save(); b.translate(fx, fy); b.rotate(fa);
+          b.fillStyle = '#2c333b'; b.fillRect(0, -1, 5, 2);
+          b.restore();
+        } else if (def.id === 'wingman') {
+          /* 导弹僚机：短翼 + 两枚挂弹（黄头），不是四旋翼 */
+          b.fillStyle = '#4a4048'; b.fillRect(fx - 4, fy - 2, 8, 4);
+          b.fillStyle = 'rgba(255,255,255,0.45)'; b.fillRect(fx - 2, fy - 2, 4, 1);
+          b.fillStyle = '#ffd166';
+          b.fillRect(fx - 3, fy + 2, 2, 2);
+          b.fillRect(fx + 1, fy + 2, 2, 2);
+        } else {
+          b.fillStyle = '#3e4b57';
+          b.fillRect(fx - 3, fy - 2, 6, 4);
+          b.fillStyle = '#8ecae6';
+          b.fillRect(fx - 2, fy - 2, 2, 2);
+          b.fillStyle = 'rgba(255,255,255,0.6)';
+          b.fillRect(fx + 1, fy - 1, 1, 1);
+          /* 旋翼：两帧闪烁 */
+          b.fillStyle = Math.sin(run.t * 30 + i) > 0 ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.12)';
+          b.fillRect(fx - 6, fy - 4, 4, 1);
+          b.fillRect(fx + 2, fy - 4, 4, 1);
+        }
       } else if (def.kind === 'orbit') {
         n = Math.max(1, Math.round(st.count));
         for (k = 0; k < n; k++) {
@@ -2048,6 +2362,40 @@
           } else if (def.id === 'reflectshield') {
             b.fillStyle = '#5c6672'; b.fillRect(-3, -4, 6, 8);
             b.fillStyle = 'rgba(180,220,255,0.5)'; b.fillRect(-2, -3, 4, 6);
+          } else if (def.id === 'saberring') {
+            /* 光剑：一条发光刃身，以轨道线为中心往内外各伸一段（判定同款），
+               不是一个小方块 —— 以前走到默认分支只画 4x4，难怪看不出"光剑"。
+               刃长读 st.blade（1 级 16 / 满级 26） */
+            var sl = st.blade || 16;
+            var inL = sl * 0.4, outL = sl * 0.6;
+            b.fillStyle = 'rgba(140,225,255,0.18)';
+            b.fillRect(-inL - 2, -3.5, inL + outL + 4, 7);
+            b.fillStyle = '#8ee9ff';
+            b.fillRect(-inL, -1.5, inL + outL, 3);
+            b.fillStyle = '#ffffff';
+            b.fillRect(-inL + 2, -0.5, inL + outL - 4, 1);
+            /* 剑柄在"内端" */
+            b.fillStyle = '#39485a';
+            b.fillRect(-inL - 5, -2, 5, 4);
+            b.fillStyle = 'rgba(255,255,255,0.35)';
+            b.fillRect(-inL - 4, -1, 3, 1);
+          } else if (def.id === 'railorb') {
+            /* 电球本体：以前走默认分支只画一个 4x4 方块，玩家根本看不见"球"。
+               现在是"光晕 + 核心 + 两圈跳动的电弧"，一圈扫过去能看出是个带电的球 */
+            var pulse = 0.5 + 0.5 * Math.sin(run.t * 9 + k);
+            b.fillStyle = 'rgba(158,240,255,' + (0.10 + 0.10 * pulse).toFixed(3) + ')';
+            b.beginPath(); b.arc(0, 0, 7 + pulse * 1.5, 0, U.TAU); b.fill();
+            b.fillStyle = '#5fd8f0';
+            b.fillRect(-3, -3, 6, 6);
+            b.fillStyle = '#9ef0ff';
+            b.fillRect(-2, -2, 4, 4);
+            b.fillStyle = '#ffffff';
+            b.fillRect(-1, -1, 2, 2);
+            /* 两小段电弧挂在球体外缘，随转速跳动（纯像素点，不用渐变） */
+            b.fillStyle = 'rgba(200,248,255,' + (0.55 + 0.35 * pulse).toFixed(2) + ')';
+            b.fillRect(4, -1, 3, 1);
+            b.fillRect(-6, 1, 2, 1);
+            b.fillRect(1, -5, 1, 2);
           } else if (def.id === 'gravitysat') {
             b.fillStyle = '#4a3b6b'; b.fillRect(-2, -2, 4, 4);
             b.fillStyle = 'rgba(177,151,252,0.5)';
@@ -2063,6 +2411,16 @@
             b.lineWidth = 1;
             b.beginPath(); b.moveTo(ox, oy); b.lineTo(p.x, p.y); b.stroke();
           }
+        }
+        /* 满级光剑环：补一圈淡色轨迹，把六把刃连成"光轮" */
+        if (st.full && def.id === 'saberring') {
+          b.save();
+          b.translate(p.x, p.y);
+          b.scale(1, 0.85);
+          b.strokeStyle = 'rgba(140,225,255,0.16)';
+          b.lineWidth = 1;
+          b.beginPath(); b.arc(0, 0, st.radius + (st.blade || 0) * 0.5, 0, U.TAU); b.stroke();
+          b.restore();
         }
         /* 满级刀轮：补一圈淡色轨迹，视觉上把刀片连成"已经合拢的圆" */
         if (st.full && def.id === 'orbitblade') {
@@ -2156,6 +2514,101 @@
       b.fillRect(21, -1, 2, 2);
     }
     b.restore();
+  };
+
+  /**
+   * 断堤巨斧：两只消防斧按战斗状态换姿态。
+   * 预警必须画在角色脚下而不是压在身上，玩家看的是“哪里会挨打”。
+   */
+  R.drawBossAxes = function (b, e, p) {
+    var a = e.aAim === undefined ? Math.atan2(p.y - e.y, p.x - e.x) : e.aAim;
+    var wind = e.aSt === 1;
+    var leapWind = e.aSt === 2;
+    var air = e.aSt === 3;
+    var swing = e.aSt === 5;
+
+    /* 起手 / 收势的进度（0→1），斧头姿态全靠它插值 */
+    var windK = wind ? 1 - Math.max(0, e.aT) / 0.68 : 0;
+    var swingK = swing ? 1 - Math.max(0, e.aT) / 0.26 : 0;
+
+    if (wind || swing) {
+      /* 扇形预警：蓄力时慢慢收紧，砍出去那一下铺满整个扫过的范围再淡出 */
+      var fillA = wind ? 0.10 + 0.10 * windK : 0.20 * (1 - swingK);
+      b.fillStyle = 'rgba(255,102,64,' + fillA.toFixed(3) + ')';
+      b.beginPath(); b.moveTo(e.x, e.y); b.arc(e.x, e.y, 118, a - 1.0, a + 1.0); b.closePath(); b.fill();
+      b.strokeStyle = 'rgba(255,139,90,' + (wind ? 0.60 : 0.75 * (1 - swingK)).toFixed(3) + ')';
+      b.lineWidth = 1;
+      b.beginPath(); b.arc(e.x, e.y, 112, a - 0.94, a + 0.94); b.stroke();
+    }
+    /* 挥砍拖尾：斧刃扫过留下的两道残影 */
+    if (swing) {
+      for (var tr = 0; tr < 2; tr++) {
+        var kk = Math.max(0, swingK - tr * 0.18);
+        var ang0 = a - 0.95 + kk * 1.9;
+        b.strokeStyle = 'rgba(255,214,170,' + ((0.55 - tr * 0.2) * (1 - swingK)).toFixed(3) + ')';
+        b.lineWidth = 2.4 - tr * 0.8;
+        b.beginPath();
+        b.arc(e.x, e.y - 4, 56 + tr * 9, ang0 - 0.34, ang0 + 0.06);
+        b.stroke();
+      }
+    }
+    if (leapWind || air) {
+      var tx = e.aTx === undefined ? p.x : e.aTx, ty = e.aTy === undefined ? p.y : e.aTy;
+      var lr = e.axeRage ? 76 : 62;
+      b.fillStyle = 'rgba(255,110,60,0.09)';
+      b.beginPath(); b.arc(tx, ty, lr, 0, U.TAU); b.fill();
+      b.strokeStyle = air ? 'rgba(255,220,160,0.85)' : 'rgba(255,120,70,0.72)';
+      b.lineWidth = 2; b.setLineDash([5, 4]);
+      b.beginPath(); b.arc(tx, ty, lr, 0, U.TAU); b.stroke(); b.setLineDash([]);
+    }
+
+    /* 斧头姿态：蓄力越张越开（拉弓），挥出时收拢着扫过去，落地贴地 */
+    var open = leapWind ? -0.55 : (air ? 0.1 : 0.32);
+    if (wind) open = 0.32 + 0.50 * windK;
+    if (swing) open = 0.86 - 0.66 * swingK;
+    if (e.aSt === 4) open = 0.12;
+    var reach = 0;
+    if (wind) reach = -4 * windK;
+    else if (swing) reach = Math.sin(Math.min(1, swingK) * Math.PI) * 9;
+
+    b.save();
+    b.translate(snap(e.x + Math.cos(a) * reach), snap(e.y - 5 - (e.airH || 0) + Math.sin(a) * reach));
+    b.rotate(a);
+    if (Math.cos(a) < 0) b.scale(1, -1);
+    for (var side = -1; side <= 1; side += 2) {
+      b.save();
+      b.rotate(side * open);
+      /* 斧柄：比身体还高，一眼能认出是双手巨斧 */
+      b.fillStyle = '#4b3925'; b.fillRect(-2, side * 9 - 1, 23, 3);
+      b.fillStyle = '#8a6538'; b.fillRect(1, side * 9 - 1, 17, 1);
+      b.fillStyle = '#2d2115'; b.fillRect(18, side * 9 - 2, 4, 5);
+      /* 双刃斧头：上半刃亮、下半刃锈 */
+      b.fillStyle = (wind || swing) ? '#ffd0a3' : '#aeb8ad';
+      b.beginPath();
+      b.moveTo(15, side * 9 - 2);
+      b.lineTo(25, side * 9 - 12);
+      b.lineTo(29, side * 9 - 3);
+      b.lineTo(22, side * 9 + 1);
+      b.closePath(); b.fill();
+      b.fillStyle = (wind || swing) ? '#e89b66' : '#7d4d32';
+      b.beginPath();
+      b.moveTo(15, side * 9 + 1);
+      b.lineTo(23, side * 9 + 3);
+      b.lineTo(27, side * 9 + 12);
+      b.lineTo(17, side * 9 + 5);
+      b.closePath(); b.fill();
+      b.fillStyle = 'rgba(255,255,255,0.55)';
+      b.fillRect(20, side * 9 - 9, 6, 1);
+      b.fillRect(24, side * 9 + 4, 4, 1);
+      b.restore();
+    }
+    b.restore();
+
+    if (air) {
+      b.fillStyle = 'rgba(0,0,0,0.28)';
+      b.beginPath(); b.ellipse ? b.ellipse(e.x, e.y + 3, 15, 5, 0, 0, U.TAU) : b.arc(e.x, e.y + 3, 12, 0, U.TAU);
+      b.fill();
+    }
   };
 
   R.drawGun = function (b, p, a) {
@@ -2491,6 +2944,74 @@
     }
   };
 
+  /**
+   * 元素状态着色：燃烧 = 橙红光 + 三颗上窜火星；冻结 = 冰蓝底 + 白边 + 冰晶。
+   * 以前减速只是 0.16 的半透明方块，几乎看不出来 —— 状态必须一眼可辨，
+   * 否则玩家根本不知道自己在烧谁、谁被冻住了。
+   */
+  R.drawStatus = function (b, e, t) {
+    var r = e.r;
+    if (e.burn > 0) {
+      var pl = 0.5 + 0.5 * Math.sin(t * 17 + e.seed);
+      b.fillStyle = 'rgba(255,120,40,' + (0.14 + 0.12 * pl).toFixed(3) + ')';
+      b.fillRect(e.x - r, e.y - r, r * 2, r * 2);
+      b.strokeStyle = 'rgba(255,150,70,' + (0.45 + 0.25 * pl).toFixed(3) + ')';
+      b.lineWidth = 1;
+      b.strokeRect(Math.round(e.x - r) + 0.5, Math.round(e.y - r) + 0.5,
+        Math.round(r * 2) - 1, Math.round(r * 2) - 1);
+      b.fillStyle = 'rgba(255,214,130,0.95)';
+      for (var i = 0; i < 3; i++) {
+        var lift = (t * 20 + i * 6 + e.seed) % 12;
+        b.fillRect(
+          Math.round(e.x - r * 0.7 + i * r * 0.7 + Math.sin(t * 9 + e.seed + i * 2) * 1.6),
+          Math.round(e.y - r - 1 - lift * 0.55),
+          2, 2
+        );
+      }
+    }
+    if (e.slow > 0.05 || e.synFrozen) {
+      var sk = Math.min(1, (e.slow || 0) + (e.synFrozen ? 0.25 : 0));
+      b.fillStyle = 'rgba(120,200,255,' + (0.10 + 0.14 * sk).toFixed(3) + ')';
+      b.fillRect(e.x - r, e.y - r, r * 2, r * 2);
+      b.strokeStyle = 'rgba(205,240,255,' + (0.30 + 0.35 * sk).toFixed(3) + ')';
+      b.lineWidth = 1;
+      b.strokeRect(Math.round(e.x - r) + 0.5, Math.round(e.y - r) + 0.5,
+        Math.round(r * 2) - 1, Math.round(r * 2) - 1);
+      b.fillStyle = 'rgba(235,250,255,0.9)';
+      b.fillRect(Math.round(e.x - r * 0.7), Math.round(e.y + r * 0.55), 2, 2);
+      b.fillRect(Math.round(e.x + r * 0.5), Math.round(e.y + r * 0.35), 2, 2);
+    }
+  };
+
+  /**
+   * 喷火 / 冷冻射流的地面光锥：三层半透明扇形叠出"从枪口泼出去"的形状。
+   * 光靠粒子在夜色街道上太淡（3~9 颗/帧看不出来），这层是让特效"存在"的关键。
+   * 参数由 Gear.flame 每帧写进 p.flameArc / p.flameRange / p.flameElem。
+   */
+  R.drawFlameCone = function (b, p, run) {
+    if (!(p.coneT > 0.01) || !p.flameArc) return;
+    var a = p.aimA || 0;
+    var arc = p.flameArc, range = p.flameRange || 90;
+    var k = Math.min(1, p.coneT / 0.16);
+    var ice = p.flameElem === 'ice';
+    var cr = ice ? 150 : 255, cg = ice ? 216 : 150, cb = ice ? 246 : 60;
+    var jit = Math.sin(run.t * 38) * 0.02;
+    /* 叠加混合：暗沥青上加色比盖透明更能"亮起来"。用完必须还原，否则后面全亮 */
+    b.save();
+    b.globalCompositeOperation = 'lighter';
+    for (var layer = 0; layer < 3; layer++) {
+      var rr = range * (0.42 + layer * 0.29);
+      var al = (ice ? 0.10 : 0.12) * k * (1 - layer * 0.18);
+      b.fillStyle = 'rgba(' + cr + ',' + cg + ',' + cb + ',' + al.toFixed(3) + ')';
+      b.beginPath();
+      b.moveTo(p.x, p.y - 3);
+      b.arc(p.x, p.y - 3, rr, a - arc + jit, a + arc + jit);
+      b.closePath();
+      b.fill();
+    }
+    b.restore();
+  };
+
   R.drawEnemy = function (b, e) {
     if (e.boss) return;          // Boss 单独处理
     /* 屏幕外的不画，后期上百只时省下大量绘制 */
@@ -2506,6 +3027,58 @@
        扑袭者蓄力：下蹲 3px + 脚下红圈随进度收紧（起跳前最亮）。
        呕酸尸蓄力：酸囊充气膨胀 + 脚下画出毒液即将覆盖的矩形预警框，
        框跟着蓄力方向转 —— 玩家看得见"要泼到哪"，躲得有依据。 */
+    /* ---- 水鬼潜渡 ----
+       水下：整个人消失，只剩外扩的涟漪和一道水痕。涟漪不是装饰，
+       是这张图唯一能读到"它从哪边来"的信息。 */
+    if (e.submerged) {
+      var rp = (e.anim * 22) % 9;
+      var sa = e.subAng || 0;
+      var kx = Math.cos(sa), ky = Math.sin(sa);
+      b.save();
+      b.translate(e.x, e.y + 2);
+      b.scale(1, 0.42);
+      /* 两圈干净的外扩水纹。不要再加深色实心块 —— 那会读成"一张脸浮在水上" */
+      b.strokeStyle = 'rgba(150,226,210,' + (0.78 - rp * 0.05).toFixed(2) + ')';
+      b.lineWidth = 1.3;
+      b.beginPath(); b.arc(0, 0, e.r * 1.15 + rp, 0, U.TAU); b.stroke();
+      b.strokeStyle = 'rgba(104,184,170,0.36)';
+      b.lineWidth = 1;
+      b.beginPath(); b.arc(0, 0, e.r * 0.48 + rp * 0.45, 0, U.TAU); b.stroke();
+      b.restore();
+      /* 身后两道分开的水痕：像船尾的 V 形浪，一眼看出它在往哪游 */
+      b.strokeStyle = 'rgba(186,232,220,0.32)';
+      b.lineWidth = 1.6;
+      for (var ww = -1; ww <= 1; ww += 2) {
+        b.beginPath();
+        b.moveTo(e.x - kx * 4 - ky * ww * 3, e.y + 2 - ky * 4 * 0.42 + kx * ww * 3 * 0.42);
+        b.lineTo(e.x - kx * 17 - ky * ww * 7, e.y + 2 - ky * 17 * 0.42 + kx * ww * 7 * 0.42);
+        b.stroke();
+      }
+      return;
+    }
+    /* 下潜预警（0.45s）：身体被水面一点点吞掉，这半秒还是活靶子 */
+    if (e.def.submerge && e.subState === 1) {
+      var dw2 = 1 - Math.max(0, e.subT / 0.45);
+      b.save();
+      b.translate(e.x, e.y);
+      b.scale(1 + dw2 * 0.12, 1 - dw2 * 0.34);
+      b.translate(-e.x, -e.y);
+      R.drawActor(b, e.spriteName, e.x, e.y, e.scale, e.anim, 0.2,
+        0, e.hitSprite, Math.min(0.45, e.flash * 0.65));
+      b.restore();
+      b.strokeStyle = 'rgba(150,214,200,' + (0.28 + 0.5 * dw2).toFixed(2) + ')';
+      b.lineWidth = 1.3;
+      b.beginPath(); b.arc(e.x, e.y + 3, e.r + 5 - 3 * dw2, 0, U.TAU); b.stroke();
+      if (e.elite) {
+        var bw5 = 18, by5 = e.y - e.r * 2.2 - 6;
+        b.fillStyle = 'rgba(0,0,0,0.6)';
+        b.fillRect(e.x - bw5 / 2 - 1, by5 - 1, bw5 + 2, 5);
+        b.fillStyle = '#ffb86b';
+        b.fillRect(e.x - bw5 / 2, by5, bw5 * Math.max(0, e.hp / e.maxHp), 3);
+      }
+      return;
+    }
+
     var esc = e.scale, ey2 = e.y;
     if (e.def.pounce && e.pounceState === 1) {
       var pw2 = Math.max(0, e.pounceWind / 0.5);
@@ -2563,10 +3136,7 @@
 
     R.drawActor(b, e.spriteName, e.x, ey2, esc, e.anim, e.gait,
       e.lean, e.hitSprite, Math.min(0.45, e.flash * 0.65));
-    if (e.slow > 0) {
-      b.fillStyle = 'rgba(140,210,255,0.16)';
-      b.fillRect(e.x - e.r, e.y - e.r, e.r * 2, e.r * 2);
-    }
+    R.drawStatus(b, e, HS.Game && HS.Game.run ? HS.Game.run.t : 0);
     if (e.elite) {
       var bw = 18;
       var by = e.y - e.r * 2.2 - 6;
@@ -3898,7 +4468,16 @@
 
   R.drawProp = function (b, o, run) {
     if (o.broken) return;
-    S.draw(b, o.frame, o.x, o.y, 1, undefined, o.flip);
+    if (o.ang) {
+      /* 废弃车辆按生成时的随机角旋转；碰撞是同一个旋转矩形，不会"看着歪、撞着正" */
+      b.save();
+      b.translate(Math.round(o.x), Math.round(o.y));
+      b.rotate(o.ang);
+      S.draw(b, o.frame, 0, 0, 1, undefined, o.flip);
+      b.restore();
+    } else {
+      S.draw(b, o.frame, o.x, o.y, 1, undefined, o.flip);
+    }
 
     /* 可搜刮提示：靠近才显示，避免满屏都是图标 */
     if (o.lootable && !o.looted) {

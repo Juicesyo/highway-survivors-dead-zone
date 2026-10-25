@@ -52,7 +52,7 @@
     /* 旧存档迁移：mapWins 是新字段。已解锁的图视为"前一关通过关"；
        老的累计 wins 也折给第一张图，通关过就别让玩家重打。 */
     if (!d.mapWins) d.mapWins = {};
-    var order = ['highway', 'night', 'desert'];
+    var order = HS.Data.mapOrder || ['highway', 'night', 'desert', 'flood'];
     if (d.wins > 0 && !d.mapWins.highway) d.mapWins.highway = d.wins;
     for (var j = 1; j < order.length; j++) {
       if (out.indexOf(order[j]) >= 0 && !d.mapWins[order[j - 1]]) {

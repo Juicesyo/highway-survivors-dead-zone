@@ -43,7 +43,7 @@
     hx /= hs; hy /= hs;
     for (var i = 0; i < list.length; i++) {
       var e = list[i];
-      if (e.dead) continue;
+      if (e.dead || e.submerged) continue;
       var dx = e.x - b.x, dy = e.y - b.y;
       var d2 = dx * dx + dy * dy;
       if (d2 >= bd || d2 < 1) continue;
@@ -88,12 +88,69 @@
     while (cur && guard++ < chains) {
       used[cur.uid] = 1;
       pts.push({ x: cur.x, y: cur.y });
-      this.hurtEnemy(cur, dmg, { tag: 'energy' });
+      this.hurtEnemy(cur, dmg, { tag: 'energy', electric: 1 });
       /* 电弧引爆：每跳落点小范围爆炸，清群更利索 */
       if (shock) this.explode(cur.x, cur.y, 18, dmg * 0.3, color || '#7ee8fa', { quiet: 1 });
       cur = this.nearestExcept(cur.x, cur.y, 95, used);
     }
     this.run.chains.push({ pts: pts, life: 0.16, max: 0.16, color: color || null });
+  };
+
+  /**
+   * 连锁闪电（升级特效·连锁闪电）
+   *
+   * 每 X 次开火蓄一发：从玩家身上拉出一道电弧跳到最近的敌人，再逐跳扩散。
+   * X 随等级缩短（6/4/3），跳数 2+lvl、伤害按武器那一发的 40/60/80% 折算，
+   * 所以它会跟着你的武器一起变强，而不是越到后期越像挠痒。
+   */
+  Game.chargeChain = function (st, mul, def) {
+    var p = this.run.p;
+    var lvl = p.chainLvl | 0;
+    if (!lvl) return;
+    /* 一次性齐射只算一次开火：散弹 8 颗弹丸不该攒 8 格 */
+    var need = HS.Data.chainNeed ? HS.Data.chainNeed(lvl) : (7 - lvl);
+    p.chainN = (p.chainN || 0) + 1;
+    if (p.chainN < need) return;
+    var dmg = (st.dmg || 10) * (mul || 1) * (0.4 + 0.2 * lvl);
+    /* 场上没人就先不放电，蓄能够了等下一个目标 */
+    if (!this.chainBolt(dmg, 2 + lvl)) return;
+    p.chainN = 0;
+  };
+
+  /** 放一道连锁闪电；返回是否真的打到了人 */
+  Game.chainBolt = function (dmg, jumps) {
+    var run = this.run, p = run.p;
+    var start = null, bd = 170 * 170;
+    for (var i = 0; i < run.enemies.length; i++) {
+      var e = run.enemies[i];
+      if (e.dead || e.submerged) continue;
+      if (p.roof ? e.roof !== p.roof : e.roof) continue;
+      var d2 = U.dist2(e.x, e.y, p.x, p.y);
+      if (d2 < bd) { bd = d2; start = e; }
+    }
+    if (!start) return false;
+    var used = {};
+    var pts = [{ x: p.x, y: p.y - 3 }];
+    var cur = start;
+    for (var j = 0; j < jumps && cur; j++) {
+      used[cur.uid] = 1;
+      pts.push({ x: cur.x, y: cur.y });
+      /* 首跳满伤、后续每跳衰减 15%；electric 让它在积水中继续传导 */
+      this.hurtEnemy(cur, dmg * Math.pow(0.85, j), { tag: 'energy', electric: 1, noCrit: true });
+      for (var k = 0; k < 3; k++) {
+        run.fx.push({
+          kind: 'p', x: cur.x + U.rand(-3, 3), y: cur.y + U.rand(-4, 2),
+          vx: U.rand(-52, 52), vy: U.rand(-52, 20),
+          life: 0.24, max: 0.24, color: k % 2 ? '#a8f3ff' : '#e8fbff', size: 1.6
+        });
+      }
+      cur = this.nearestExcept(cur.x, cur.y, 100, used);
+    }
+    run.chains.push({ pts: pts, life: 0.2, max: 0.2, color: '#a8f3ff' });
+    run.fx.push({ kind: 'ring', x: start.x, y: start.y, r: 3, max: 14,
+      life: 0.25, maxLife: 0.25, color: '#a8f3ff' });
+    HS.Audio.zap();
+    return true;
   };
 
   Game.lob = function (x, y, tx, ty, opt) {
@@ -167,6 +224,8 @@
       radius: opt.radius || 0, explode: opt.explode ? 1 : 0, dps: 0, dur: 0,
       split: opt.split || 0, bounce: opt.bounce || 0, homing: opt.homing || 0,
       effect: opt.effect || null, delay: opt.delay || 0,
+      /* 拖拽参数（鱼叉 / 钩爪各自不同，见 combat.js 的 pull 效果） */
+      pullStop: opt.pullStop, pullK: opt.pullK,
       boomerang: opt.boomerang || 0, tag: opt.tag || null,
       centerBonus: opt.centerBonus || 0,
       age: 0, didSplit: false
@@ -179,7 +238,7 @@
     var list = this.run.enemies, best = null, bd = range * range;
     for (var i = 0; i < list.length; i++) {
       var e = list[i];
-      if (e.dead) continue;
+      if (e.dead || e.submerged) continue;
       var d = U.dist2(e.x, e.y, x, y);
       if (d < bd) { bd = d; best = e; }
     }
@@ -190,7 +249,7 @@
     var list = this.run.enemies, best = null, bd = range * range;
     for (var i = 0; i < list.length; i++) {
       var e = list[i];
-      if (e.dead || used[e.uid]) continue;
+      if (e.dead || e.submerged || used[e.uid]) continue;
       var d = U.dist2(e.x, e.y, x, y);
       if (d < bd) { bd = d; best = e; }
     }
@@ -208,6 +267,9 @@
   Game.hurtEnemy = function (e, dmg, opt) {
     if (e.dead) return;
     opt = opt || {};
+    /* 潜渡中的水鬼在水面以下：子弹、刀锋、光束都摸不到它。
+       只有爆炸（榴弹 / 炸弹 / 炮击）能靠冲击波震到它 —— 这是提前处理它的唯一办法。 */
+    if (e.submerged && !opt.force && opt.tag !== 'explosive') return;
     var run = this.run, p = run.p;
     var crit = !opt.noCrit && Math.random() < p.crit;
     var d = dmg;
@@ -235,12 +297,30 @@
       }
     }
 
+    /* 护甲：只挡实弹 / 近战 / 爆炸。火焰、冰霜、持续伤害在调用点标了
+       ignoreArmor —— 它们天生无视护甲，所以「破甲」对喷火枪毫无意义。
+       破甲只是把这一层削减掉一部分（p.armorPen）。 */
+    if (e.armor && !opt.ignoreArmor) d *= (1 - e.armor * (1 - p.armorPen));
+
     /* Boss 减伤：末世街区的暴君皮糙肉厚，吃到的所有伤害打折（e.dmgCut）。
        放在暴击/联动之后，减的是"最终结算值"，倍率再高也压得住。 */
     if (e.dmgCut) d *= (1 - e.dmgCut);
 
+    if (opt.electric && !opt.noConduct && HS.Water) HS.Water.conduct(e, d, run);
     e.hp -= d;
     e.flash = 1;
+
+    /* 处决：这一下把血打到斩杀线以下的，直接收掉 —— 伤害多少不重要，
+       重要的是"残血不必再补一枪"。Boss 免疫（否则整场 Boss 战只剩刷血线），
+       精英阈值减半；燃烧 / 中毒这类持续伤害同样能触发。 */
+    var exec = false;
+    if (p.execCut && e.maxHp > 0 && !e.boss && !(e.def && e.def.boss)) {
+      var cut = p.execCut * (e.elite ? 0.5 : 1);
+      if (cut > 0 && e.hp > 0 && e.hp <= e.maxHp * cut) {
+        e.hp = 0;
+        exec = true;
+      }
+    }
 
     if (!opt.silent) {
       if (run.texts.length > 30) run.texts.shift();
@@ -252,7 +332,60 @@
       /* 击中反馈按伤害来源分音色（内部自带节流，命中频率太高） */
       HS.Audio.impact(opt.tag, crit);
     }
+    /* 被炸到就震出水面：水下无敌的解法是往水里丢爆炸物，不是拿枪对着涟漪打 */
+    if (e.submerged && opt.tag === 'explosive') {
+      e.submerged = false;
+      e.subState = 3; e.subT = 0.3;
+      e.subCd = (e.def.subCd || 4) + Math.random() * 2;
+      if (HS.Audio && HS.Audio.splash) HS.Audio.splash(true);
+      for (var sbi = 0; sbi < 6; sbi++) {
+        run.fx.push({
+          kind: 'p', x: e.x + U.rand(-5, 5), y: e.y + U.rand(-4, 4),
+          vx: U.rand(-42, 42), vy: U.rand(-56, -10),
+          life: 0.34, max: 0.34, color: sbi % 2 ? '#9ecfc4' : '#6f9b93', size: 2
+        });
+      }
+    }
+    if (exec) this.execKill(e, opt);
     if (e.hp <= 0) this.killEnemy(e);
+  };
+
+  /**
+   * 处决表现：一道贴脸的红色斩痕 + 血点 + 「处决」字。
+   * 反馈必须比普通命中重一档，否则玩家感受不到"这一下是斩杀"。
+   */
+  Game.execKill = function (e, opt) {
+    var run = this.run, p = run.p;
+    var a = Math.atan2(e.y - p.y, e.x - p.x);
+    /* 交叉两道斩痕：单弧在低分辨率下容易被当成普通刀光，交叉起来才是"处决" */
+    run.fx.push({
+      kind: 'slash', x: e.x, y: e.y - 3, ang: a, r: 18 + e.r, arc: 2.5,
+      life: 0.26, max: 0.26, color: '#ff2d2d'
+    });
+    run.fx.push({
+      kind: 'slash', x: e.x, y: e.y - 4, ang: a + 1.05, r: 15 + e.r, arc: 1.9,
+      life: 0.22, max: 0.22, color: '#ffd2d2'
+    });
+    run.fx.push({
+      kind: 'ring', x: e.x, y: e.y, r: 3, max: 13,
+      life: 0.18, maxLife: 0.18, color: '#ff8a8a'
+    });
+    for (var i = 0; i < 7; i++) {
+      run.fx.push({
+        kind: 'p', x: e.x + U.rand(-3, 3), y: e.y + U.rand(-4, 2),
+        vx: U.rand(-76, 76), vy: U.rand(-96, 12),
+        life: U.rand(0.18, 0.34), max: 0.34,
+        color: i % 3 ? '#b3212a' : '#ff6b6b', size: i % 2 ? 2 : 1
+      });
+    }
+    if (!opt || !opt.silent) {
+      if (run.texts.length > 30) run.texts.shift();
+      run.texts.push({
+        x: e.x + U.rand(-2, 2), y: e.y - e.r - 8,
+        vy: -24, life: 0.6, max: 0.6, txt: '处决', crit: true
+      });
+    }
+    if (HS.Audio && HS.Audio.execute) HS.Audio.execute();
   };
 
   Game.killEnemy = function (e) {
@@ -271,6 +404,28 @@
     if (p.syn && p.syn.xbStack) {
       /* 穿透流：击杀会保留已有的穿透层数，算是一种奖励 */
       p.xbT = Math.max(p.xbT || 0, 1.2);
+    }
+
+    /* 龙息喷枪点着的目标烧死后炸开，并把火递给周围的人 —— 火焰会顺着尸群走。
+       密集尸群里可能连锁，所以按 0.25s 窗口限 6 次，防止一帧炸出上百次。 */
+    if (e.napalm && !e.boss) {
+      if (run.napalmT === undefined || run.t - run.napalmT > 0.25) {
+        run.napalmT = run.t;
+        run.napalmN = 0;
+      }
+      if (run.napalmN < 6) {
+        run.napalmN++;
+        var nd = Math.max(8, (e.burnDps || 0) * 2.4);
+        this.explode(e.x, e.y, 26, nd, '#ff8b3d', { quiet: true });
+        for (var bi = 0; bi < run.enemies.length; bi++) {
+          var ne = run.enemies[bi];
+          if (ne.dead || ne === e) continue;
+          if (U.dist(ne.x, ne.y, e.x, e.y) > 34 + ne.r) continue;
+          ne.burn = Math.max(ne.burn || 0, 1.6);
+          ne.burnDps = Math.max(ne.burnDps || 0, nd * 0.5);
+          ne.napalm = 1;
+        }
+      }
     }
 
     /* 击杀飞溅（灰黑） */
@@ -364,7 +519,8 @@
         if (d >= radius + e.r) continue;
         var falloff = 1 - 0.4 * (d / (radius || 1));
         if (center > 1 && d < radius * 0.4) falloff *= center;
-        this.hurtEnemy(e, dmg * falloff, { tag: 'explosive' });
+        this.hurtEnemy(e, dmg * falloff, { tag: 'explosive',
+          electric: !!(src && (src.electric || src.id === 'emp' || src.effect === 'emp')) ? 1 : 0 });
       }
       /* 碎片：从爆心向外甩一圈短命强弹，回程还能补刀 */
       if (src && src.shard > 0) {
@@ -505,6 +661,8 @@
       for (var j = 0; j < enemies.length; j++) {
         var e = enemies[j];
         if (e.dead) continue;
+        /* 水下的水鬼不挡子弹：打过去、穿过去，别让它白吃一发再消失 */
+        if (e.submerged) continue;
         if (b.hit && b.hit[e.uid]) continue;
         var rr = e.r + b.r;
         if (U.dist2(e.x, e.y, b.x, b.y) >= rr * rr) continue;
@@ -567,11 +725,36 @@
       e.burn = Math.max(e.burn || 0, 1.5);
       e.burnDps = Math.max(e.burnDps || 0, b.dmg * 0.5);
     } else if (b.effect === 'pull') {
+      /* 鱼叉：把猎物往自己这边拽。
+         · 距离越远拽得越狠（最多 150px），但停在贴身 26px 外，别把敌人塞进怀里
+         · 拽完给 0.16s 踉跄 —— 否则它下一帧就走回来，"拉近"等于没发生
+         · 拉出一道锁链 + 铁链声，让"拽"这件事看得见 */
+      var run2 = this.run;
       var dx = p.x - e.x, dy = p.y - e.y;
       var d = Math.sqrt(dx * dx + dy * dy) || 1;
-      var pull = Math.min(48, Math.max(0, d - 22));
-      e.x += dx / d * pull;
-      e.y += dy / d * pull;
+      /* 停手距离 / 拖拽比例按武器给：鱼叉是重叉，留一点身位（26 / 0.72）；
+         钩爪是把人拽到能砍到的距离（16 / 0.9） */
+      var stopD = b.pullStop === undefined ? 26 : b.pullStop;
+      var pullK = b.pullK === undefined ? 0.72 : b.pullK;
+      var pull = Math.min(150, Math.max(0, d - stopD) * pullK);
+      if (pull > 1) {
+        e.x += dx / d * pull;
+        e.y += dy / d * pull;
+        e.stun = Math.max(e.stun || 0, 0.16);
+        e.pullT = 0.18;
+        run2.chains.push({
+          pts: [{ x: p.x, y: p.y - 3 }, { x: e.x, y: e.y - 4 }],
+          life: 0.18, max: 0.18, color: '#d8c9a2', straight: true, w: 1
+        });
+        for (var pi = 0; pi < 4; pi++) {
+          run2.fx.push({
+            kind: 'p', x: e.x + U.rand(-3, 3), y: e.y + U.rand(-3, 3),
+            vx: U.rand(-40, 40), vy: U.rand(-50, 6),
+            life: 0.2, max: 0.2, color: '#b9a887', size: 1.5
+          });
+        }
+        if (HS.Audio && HS.Audio.chain) HS.Audio.chain();
+      }
     } else if (b.effect === 'mark') {
       e.mark = 3.5;
       e.markMul = 1.18;
@@ -619,8 +802,59 @@
       if (b.effect === 'smoke') {
         run.pools.push({
           x: b.x, y: b.y, r: b.radius, life: b.dur || 5, max: b.dur || 5,
-          dps: 0, slow: 0.35, tick: 0, dead: false, smoke: 1
+          dps: 0, slow: b.slow || 0.25, tick: 0, dead: false, smoke: 1
         });
+      } else {
+        /* 每种投掷物补一层自己的落地特效 —— 以前全都只有一圈同色冲击环，
+           冰冻手雷和普通手雷在画面上完全一样 */
+        if (b.id === 'cryogrenade') {
+          for (i = 0; i < 7; i++) {
+            var ca2 = i / 7 * U.TAU + Math.random() * 0.4;
+            var cs = U.rand(40, 110);
+            run.fx.push({
+              kind: 'p', x: b.x + Math.cos(ca2) * 6, y: b.y + Math.sin(ca2) * 4,
+              vx: Math.cos(ca2) * cs, vy: Math.sin(ca2) * cs * 0.8 - 12,
+              life: U.rand(0.3, 0.55), max: 0.55,
+              color: i % 2 ? '#dff3ff' : '#8fd4ff', size: 2.5
+            });
+          }
+          run.fx.push({
+            kind: 'ring', x: b.x, y: b.y, r: 8, max: b.radius * 0.9,
+            life: 0.35, maxLife: 0.35, color: '#bfe9ff'
+          });
+        } else if (b.id === 'flashbang') {
+          /* 爆闪：两圈快速外扩的白环，比普通爆炸更快更亮 */
+          run.fx.push({
+            kind: 'ring', x: b.x, y: b.y, r: 6, max: b.radius * 1.5,
+            life: 0.22, maxLife: 0.22, color: '#ffffff'
+          });
+          run.fx.push({
+            kind: 'ring', x: b.x, y: b.y, r: 2, max: b.radius * 0.7,
+            life: 0.34, maxLife: 0.34, color: '#fff6c8'
+          });
+        } else if (b.id === 'emp') {
+          /* 电磁脉冲：几道短电弧向外劈 */
+          for (i = 0; i < 5; i++) {
+            var ea2 = i / 5 * U.TAU + Math.random() * 0.5;
+            run.chains.push({
+              pts: [{ x: b.x, y: b.y },
+                { x: b.x + Math.cos(ea2) * b.radius * 0.85, y: b.y + Math.sin(ea2) * b.radius * 0.7 }],
+              life: 0.16, max: 0.16, color: '#8ef4ff', straight: 0
+            });
+          }
+        } else {
+          /* 普通爆炸物：一把橙黄火星，方向随机 */
+          for (i = 0; i < 6; i++) {
+            var sa2 = Math.random() * U.TAU;
+            var sp2 = U.rand(50, 140);
+            run.fx.push({
+              kind: 'p', x: b.x, y: b.y,
+              vx: Math.cos(sa2) * sp2, vy: Math.sin(sa2) * sp2 - 20,
+              life: U.rand(0.2, 0.4), max: 0.4,
+              color: i % 3 ? (b.color || '#ffb347') : '#fff3c4', size: 2
+            });
+          }
+        }
       }
       return;
     }
@@ -636,6 +870,17 @@
     HS.Audio.boom();
   };
 
+  /** 某个点是否在烟幕里（远程压制 / 弹道遮挡都靠它） */
+  Game.inSmoke = function (x, y) {
+    var pools = this.run.pools;
+    for (var i = 0; i < pools.length; i++) {
+      var pool = pools[i];
+      if (!pool.smoke || pool.dead) continue;
+      if (U.dist2(x, y, pool.x, pool.y) < pool.r * pool.r) return true;
+    }
+    return false;
+  };
+
   Game.updateEnemyBullets = function (dt) {
     var run = this.run, p = run.p, list = run.ebullets;
     for (var i = 0; i < list.length; i++) {
@@ -645,6 +890,18 @@
       b.life -= dt;
       if (b.kind === 'rock') b.rot = (b.rot || 0) + (b.spin || 0) * dt;
       if (b.life <= 0) { b.dead = true; continue; }
+
+      /* 烟幕吃掉远程弹道：子弹/酸液穿进烟雾就散掉 —— 这是烟雾发射器的核心用途 */
+      if (run.pools.length && this.inSmoke(b.x, b.y)) {
+        b.dead = true;
+        if (run.fx.length < 200) {
+          run.fx.push({
+            kind: 'p', x: b.x, y: b.y, vx: U.rand(-14, 14), vy: U.rand(-14, 4),
+            life: 0.3, max: 0.3, color: '#b9c2cc', size: 2
+          });
+        }
+        continue;
+      }
 
       /* 载具是实体：子弹按车体胶囊判定，不再从车头车尾穿过去。
          打到自己开的车 → 车体磨损（damagePlayer 内部路由）；
@@ -864,7 +1121,7 @@
       }
       if (e.burn > 0) {
         e.burn -= dt;
-        this.hurtEnemy(e, (e.burnDps || 0) * dt, { silent: true, noCrit: true });
+        this.hurtEnemy(e, (e.burnDps || 0) * dt, { silent: true, noCrit: true, dot: 1, ignoreArmor: 1 });
         if (e.burn <= 0) e.burnDps = 0;
         /* 燃烧要有看得见的火苗 —— 否则"弹丸点燃目标"这套机制等于不存在 */
         if (run.fx.length < 200 && Math.random() < 0.3) {
@@ -964,7 +1221,7 @@
 
       var dx = tx - e.x, dy = ty - e.y;
       var d = Math.sqrt(dx * dx + dy * dy) || 1;
-      var spd = e.speed * (1 - (e.slow || 0));
+      var spd = e.speed * (1 - (e.slow || 0)) * HS.Water.speed(e, run);
       var ux = dx / d, uy = dy / d;
       var px0 = e.x, py0 = e.y;   // 位移前的坐标，用来判断有没有被顶死
 
@@ -978,6 +1235,54 @@
         } else if (e.blockT > 0.45 && !(e.wpT > 0)) {
           e.wallT = 0.6;
           if (!e.wallSide) e.wallSide = (e.uid & 1) ? 1 : -1;
+        }
+      }
+
+      /* 深水避让：普通丧尸沿水岸走，不再一头顶在深水边缘原地抖。
+         水栖敌人（水鬼）整片水域都能走，不需要绕。
+         三段式：跟路点 → 锁定绕行方向 → 局部避让；被水塘困住时用粗网格寻路兜底。 */
+      if (!e.boss && !e.roof && run.map.water && HS.Water && !(e.def && e.def.waterborne)) {
+        if (!e.waterSide) e.waterSide = (e.uid & 1) ? 1 : -1;
+        var wpA = Math.atan2(p.y - e.y, p.x - e.x);
+
+        if (e.rtT > 0) {
+          /* 跟路点：到点之前不重新决策，否则会在两格边界上来回蹭 */
+          e.rtT -= dt;
+          var rtD = Math.sqrt(U.dist2(e.x, e.y, e.rtX, e.rtY));
+          if (rtD < 14) e.rtT = 0;
+          else { ux = (e.rtX - e.x) / rtD; uy = (e.rtY - e.y) / rtD; }
+        } else if (e.waterT > 0) {
+          e.waterT -= dt;
+          ux = Math.cos(e.waterAng); uy = Math.sin(e.waterAng);
+        } else {
+          var wd = HS.Water.stepDir(e.x, e.y, Math.atan2(uy, ux),
+            Math.max(20, e.r * 2.6), run, e.waterSide, wpA);
+          var wDev = wd - Math.atan2(uy, ux);
+          while (wDev > Math.PI) wDev -= U.TAU;
+          while (wDev < -Math.PI) wDev += U.TAU;
+          if (Math.abs(wDev) > 0.45) { e.waterAng = wd; e.waterT = 0.6; }
+          ux = Math.cos(wd); uy = Math.sin(wd);
+        }
+
+        /* 卡死看门狗：1.2s 内净位移不到 26px（原地顶水 / 绕着水塘打转都算） */
+        var watk = (e.def.pounce && e.pounceState) || (e.def.vomit && e.vomitState);
+        e.stuckT = (e.stuckT || 0) + dt;
+        if (e.stuckT >= 1.2) {
+          var smx = e.x - (e.stuckX === undefined ? e.x : e.stuckX);
+          var smy = e.y - (e.stuckY === undefined ? e.y : e.stuckY);
+          var farFromP = U.dist2(e.x, e.y, p.x, p.y) > 34 * 34;
+          if (e.stuckX !== undefined && farFromP && !watk && smx * smx + smy * smy < 676) {
+            var rt = HS.Water.route ? HS.Water.route(e.x, e.y, p.x, p.y, run) : null;
+            if (rt) {
+              e.rtX = rt.x; e.rtY = rt.y; e.rtT = 6;
+            } else {
+              /* 没有可走的路：贴着水岸长距离绕一侧（比每帧重算更不容易打转） */
+              e.waterAng = wpA + e.waterSide * 1.5;
+              e.waterT = 1.6;
+              e.waterSide = -e.waterSide;
+            }
+          }
+          e.stuckX = e.x; e.stuckY = e.y; e.stuckT = 0;
         }
       }
 
@@ -1063,6 +1368,97 @@
               });
             }
             if (e.gT <= 0) { e.gSt = 0; e.gCd = 2.4; }
+          }
+        } else if (bt === 'axeboss') {
+          /* ---- 断堤巨斧（锈水高速）----
+             交叉斩封走位，跃劈砸出深水坑。两招都会劈碎桥面与残骸。
+             半血后进入“断堤”状态：动作更快，落点水坑更大。 */
+          e.axeRage = e.hp < e.maxHp * 0.45;
+          if (e.axeRage) spd *= 1.28;
+          e.aSt = e.aSt || 0;
+          e.aCleaveCd = (e.aCleaveCd === undefined ? 3.2 : e.aCleaveCd) - dt;
+          e.aLeapCd = (e.aLeapCd === undefined ? 6.2 : e.aLeapCd) - dt;
+          if (e.aSt === 0) {
+            e.x += ux * spd * dt; e.y += uy * spd * dt;
+            if (e.aLeapCd <= 0 && d < 290 && d > 45) {
+              e.aSt = 2; e.aT = 0.82; e.aAim = Math.atan2(p.y - e.y, p.x - e.x);
+            } else if (e.aCleaveCd <= 0 && d < 132) {
+              e.aSt = 1; e.aT = 0.68; e.aAim = Math.atan2(p.y - e.y, p.x - e.x);
+              run.shake = Math.max(run.shake, 3);
+            }
+          } else if (e.aSt === 1) {
+            /* 交叉斩：双斧亮起锈红预警，0.68s 后锁向落下。 */
+            e.aT -= dt;
+            e.aAim = Math.atan2(p.y - e.y, p.x - e.x);
+            if (Math.random() < 0.55) run.fx.push({
+              kind: 'p', x: e.x + Math.cos(e.aAim) * 16, y: e.y - 5 + Math.sin(e.aAim) * 16,
+              vx: U.rand(-12, 12), vy: U.rand(-28, -8), life: 0.3, max: 0.3,
+              color: Math.random() < 0.5 ? '#ff7b4a' : '#ffc078', size: 2
+            });
+            if (e.aT <= 0) {
+              var pAng = Math.atan2(p.y - e.y, p.x - e.x);
+              for (var ax = -1; ax <= 1; ax += 2) {
+                var aa = e.aAim + ax * 0.46;
+                run.fx.push({ kind: 'slash', x: e.x, y: e.y - 3, ang: aa, r: 92, arc: 1.3, life: 0.24, max: 0.24, color: '#ffb27a' });
+                if (U.dist(e.x, e.y, p.x, p.y) < 118) {
+                  var diff = pAng - aa;
+                  while (diff > Math.PI) diff -= U.TAU;
+                  while (diff < -Math.PI) diff += U.TAU;
+                  if (Math.abs(diff) < 0.86) this.damagePlayer(e.dmg * 1.15);
+                }
+                var tipX = e.x + Math.cos(aa) * 72, tipY = e.y + Math.sin(aa) * 72;
+                HS.World.smash(tipX, tipY, 22, this);
+                if (HS.Water) HS.Water.breakTerrain(tipX, tipY, e.axeRage ? 25 : 20, run);
+              }
+              run.shake = Math.max(run.shake, 7);
+              HS.Audio.boom();
+              /* 挥出去之后留 0.26s 的收势：斧头扫过、身体前压 —— 让"它真的砍了一刀"看得见 */
+              e.aSt = 5; e.aT = 0.26;
+              e.aCleaveCd = e.axeRage ? 2.9 : 4.2;
+            }
+          } else if (e.aSt === 2) {
+            /* 跃劈蓄力：蹲下、双斧后拉，落点先在地面亮圈。 */
+            e.aT -= dt;
+            e.aAim = Math.atan2(p.y - e.y, p.x - e.x);
+            e.aTx = p.x; e.aTy = p.y;
+            if (e.aT <= 0) {
+              e.aSt = 3; e.aT = 0.58; e.aAir = 0.58;
+              e.aSX = e.x; e.aSY = e.y;
+              run.shake = Math.max(run.shake, 4);
+              HS.Audio.zap();
+            }
+          } else if (e.aSt === 3) {
+            /* 空中跃劈：按剩余时间插值落点，落地前不结算接触伤害。 */
+            e.aT -= dt;
+            var ak = 1 - Math.max(0, e.aT) / 0.58;
+            e.x = e.aSX + (e.aTx - e.aSX) * ak;
+            e.y = e.aSY + (e.aTy - e.aSY) * ak;
+            e.airH = Math.sin(ak * Math.PI) * 28;
+            if (e.aT <= 0) {
+              e.airH = 0;
+              var lr = e.axeRage ? 76 : 62;
+              if (U.dist(e.x, e.y, p.x, p.y) < lr + p.r) this.damagePlayer(e.dmg * 1.35);
+              run.fx.push({ kind: 'ring', x: e.x, y: e.y + 3, r: 6, max: lr, life: 0.34, maxLife: 0.34, color: '#ff9a66' });
+              run.fx.push({ kind: 'ring', x: e.x, y: e.y + 3, r: 3, max: lr * 0.62, life: 0.5, maxLife: 0.5, color: '#b8e4d4' });
+              HS.World.smash(e.x, e.y, lr * 0.7, this);
+              if (HS.Water) HS.Water.breakTerrain(e.x, e.y, e.axeRage ? 46 : 36, run);
+              for (var wv = 0; wv < 10; wv++) run.fx.push({
+                kind: 'p', x: e.x + U.rand(-14, 14), y: e.y + U.rand(-7, 7),
+                vx: U.rand(-90, 90), vy: U.rand(-90, 20), life: 0.45, max: 0.45,
+                color: wv % 2 ? '#7fb5a3' : '#c6a56a', size: 2
+              });
+              run.shake = Math.max(run.shake, 10);
+              HS.Audio.boom();
+              e.aSt = 4; e.aT = 0.72;
+            }
+          } else if (e.aSt === 4) {
+            /* 跃劈落地收招 */
+            e.aT -= dt;
+            if (e.aT <= 0) { e.aSt = 0; e.aLeapCd = e.axeRage ? 5.2 : 7.6; }
+          } else {
+            /* aSt 5：交叉斩的挥砍收势，纯表演，不结算伤害也不动冷却 */
+            e.aT -= dt;
+            if (e.aT <= 0) e.aSt = 0;
           }
         } else if (bt === 'stalker') {
           /* ---- 猎杀者（荒漠公路）----
@@ -1205,7 +1601,8 @@
           e.y -= uy * spd * 0.8 * dt;
         }
         e.shootCd -= dt;
-        if (e.shootCd <= 0 && d < e.def.range * 1.2) {
+        /* 在烟里看不见目标：持枪匪徒 / 吐酸者被烟幕压制 */
+        if (e.shootCd <= 0 && d < e.def.range * 1.2 && !this.inSmoke(e.x, e.y)) {
           e.shootCd = e.def.cd;
           /* 持枪匪徒打的是子弹，吐酸者喷的是酸液 —— 表现和手感完全不同 */
           if (e.def.gun) this.fireGun(e, Math.atan2(dy, dx));
@@ -1314,6 +1711,77 @@
             e.vomitWind = 0.7;
           }
         }
+      } else if (e.def.submerge) {
+        /* ---- 水鬼：潜渡 ----
+           0 追（和普通丧尸一样绕深水）→ 1 下潜（0.45s 冒泡，仍是活靶子）
+           → 2 水下突进（1.5s 无视深水、子弹打不到，水面只剩涟漪）
+           → 3 出水（溅水，贴脸浮出才咬得到）→ 冷却。
+           深水对所有其他单位都是墙，只有它是近路：玩家得盯着水面的涟漪走位。 */
+        e.subCd = (e.subCd === undefined ? 2.4 + Math.random() * 2 : e.subCd) - dt;
+        var dpd = U.dist(e.x, e.y, p.x, p.y);
+
+        if (e.subState === 1) {
+          e.subT -= dt;
+          if (Math.random() < 0.5) {
+            run.fx.push({
+              kind: 'p', x: e.x + U.rand(-6, 6), y: e.y + U.rand(-4, 4),
+              vx: U.rand(-8, 8), vy: -U.rand(10, 26),
+              life: 0.4, max: 0.4, color: '#9fc6bb', size: 1.6
+            });
+          }
+          if (e.subT <= 0) {
+            e.subState = 2;
+            e.subT = e.def.subDur || 1.5;
+            e.submerged = true;
+            e.subAng = Math.atan2(p.y - e.y, p.x - e.x);
+            HS.Audio.splash(false);
+            run.fx.push({
+              kind: 'ring', x: e.x, y: e.y + 2, r: 2, max: 16,
+              life: 0.5, maxLife: 0.5, color: '#a8e0d8'
+            });
+          }
+        } else if (e.subState === 2) {
+          e.subT -= dt;
+          var subWant = Math.atan2(p.y - e.y, p.x - e.x);
+          var subDa = subWant - e.subAng;
+          while (subDa > Math.PI) subDa -= U.TAU;
+          while (subDa < -Math.PI) subDa += U.TAU;
+          e.subAng += Math.max(-2.2 * dt, Math.min(2.2 * dt, subDa));
+          var subSpd = e.speed * 1.75;
+          e.x += Math.cos(e.subAng) * subSpd * dt;
+          e.y += Math.sin(e.subAng) * subSpd * dt;
+          /* 涟漪是它唯一的破绽：一路拖过去，看得懂就知道该往哪躲 */
+          if (Math.random() < 0.6) {
+            run.fx.push({
+              kind: 'ring', x: e.x + U.rand(-3, 3), y: e.y + U.rand(-2, 2),
+              r: 1, max: 9, life: 0.5, maxLife: 0.5, color: '#8fc4b8'
+            });
+          }
+          if (e.subT <= 0 || dpd < 20) {
+            e.subState = 3; e.subT = 0.3; e.submerged = false;
+            HS.Audio.splash(true);
+            for (var sw = 0; sw < 6; sw++) {
+              run.fx.push({
+                kind: 'p', x: e.x, y: e.y,
+                vx: U.rand(-46, 46), vy: U.rand(-58, -8),
+                life: 0.34, max: 0.34, color: sw % 2 ? '#9ecfc4' : '#6f9b93', size: 2
+              });
+            }
+            /* 出水一口：贴脸浮出才咬得到，站着不动才会被偷袭 */
+            if (dpd < e.r + p.r + 8 && !p.roof && !e.roof) this.damagePlayer(e.dmg);
+          }
+        } else if (e.subState === 3) {
+          e.subT -= dt;
+          if (e.subT <= 0) { e.subState = 0; e.subCd = e.def.subCd + Math.random() * 2.2; }
+        } else {
+          e.x += ux * spd * dt;
+          e.y += uy * spd * dt;
+          if (e.subCd <= 0 && dpd > 44 && dpd < 250 && !p.roof && !e.roof &&
+              HS.Water && HS.Water.zone(e.x, e.y, run) > 0) {
+            e.subState = 1;
+            e.subT = 0.45;
+          }
+        }
       } else if (e.def.wobble) {
         var wob = Math.sin(run.t * 4 + e.seed) * 0.55;
         var ang2 = Math.atan2(dy, dx) + wob;
@@ -1331,8 +1799,9 @@
         HS.Buildings.resolveRoof(e, e.roof);
       } else {
         var mdx = e.x - px0, mdy = e.y - py0;
-        HS.World.resolve(e, e.r * 0.4);
+        HS.World.resolve(e, e.r * 0.4, px0, py0);
         slideFix(e, px0, py0, mdx, mdy);
+        HS.Water.resolve(e, e.r * 0.4, px0, py0, run);
       }
 
       /* 相互挤开，避免叠成一条线 */
@@ -1379,7 +1848,8 @@
          （接触击退会把位移抵消掉，误判成卡住会让它绕着玩家打转）。
          扑袭者蓄力 / 踉跄、呕酸尸蓄力 / 喷吐时站着不动是动作的一部分，
          不能被当成"卡住"拉去脱困。 */
-      var acting = (e.def.pounce && e.pounceState) || (e.def.vomit && e.vomitState);
+      var acting = (e.def.pounce && e.pounceState) || (e.def.vomit && e.vomitState) ||
+        (e.def.submerge && e.subState);
       if (!e.boss && !e.def.ranged && !acting) {
         if (ratio < 0.45 && U.dist(e.x, e.y, p.x, p.y) > 26) {
           e.blockT += dt;
@@ -1392,7 +1862,9 @@
 
       /* 接触伤害：只有同一层才能碰到（地面 vs 楼顶互不影响） */
       var sameLevel = (!pRoof && !e.roof) || (pRoof && e.roof === pRoof);
-      if (sameLevel) {
+      var airborne = e.def.bossType === 'axeboss' && e.aSt === 3;
+      /* 潜渡中的水鬼在水面以下：既碰不到玩家，也啃不到车 */
+      if (sameLevel && !airborne && !e.submerged) {
         var touching;
         if (p.veh) {
           /* 车是长条：按到车身的距离算。车尾被啃也算啃车，
@@ -1420,6 +1892,20 @@
             }
             this.damagePlayer(e.dmg);
           }
+        }
+      }
+
+      /* 画面外卡死的杂兵直接回收（世界 320x180，280px 一定在画外），留着只会白占刷怪预算
+         （楼体缝隙、被道具夹住的窄缝都归这里兜底）。每秒半次判定，几乎零成本。 */
+      if (!e.boss) {
+        e.farT = (e.farT || 0) + dt;
+        if (e.farT >= 1.5) {
+          if (U.dist2(e.x, e.y, p.x, p.y) > 280 * 280) {
+            var fmx = e.x - (e.farX === undefined ? e.x : e.farX);
+            var fmy = e.y - (e.farY === undefined ? e.y : e.farY);
+            if (e.farX !== undefined && fmx * fmx + fmy * fmy < 64) e.dead = true;
+          }
+          e.farX = e.x; e.farY = e.y; e.farT = 0;
         }
       }
     }
@@ -1579,7 +2065,7 @@
           var e = run.enemies[j];
           if (e.dead) continue;
           if (U.dist2(e.x, e.y, pool.x, pool.y) < (pool.r + e.r) * (pool.r + e.r)) {
-            if (pool.dps > 0) this.hurtEnemy(e, pool.dps * 0.25, { silent: true, tag: 'fire' });
+            if (pool.dps > 0) this.hurtEnemy(e, pool.dps * 0.25, { silent: true, tag: 'fire', dot: 1, ignoreArmor: 1 });
             if (pool.slow) {
               e.slow = Math.max(e.slow || 0, Math.min(0.8, pool.slow));
               e.slowT = Math.max(e.slowT || 0, 0.6);

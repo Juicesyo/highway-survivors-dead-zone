@@ -23,6 +23,7 @@ require('./src/data/vehicles.js');
 require('./src/data/icons.js');
 require('./src/world/buildings.js');
 require('./src/world/obstacles.js');
+require('./src/world/water.js');
 require('./src/game/save.js');
 require('./src/game/game.js');
 require('./src/game/gear.js');

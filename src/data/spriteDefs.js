@@ -564,6 +564,31 @@
     }
   };
 
+  /* 锈水高速：水鬼沿用扑袭者的低伏剪影，换成泡烂的青灰皮肤，
+     靠近浅水时会和浑浊水面融在一起；巨斧 Boss 用暴君骨架，改成锈红尸皮，
+     双斧由 render.js 按动作状态叠加绘制。 */
+  defs.drowner = {
+    w: 20, h: 24, px: 2,
+    pal: {
+      '.': null, o: '#07100f',
+      g: '#426d63', G: '#5d8b7d', h: '#31564f', d: '#29453f',
+      k: '#06100e', e: '#d8ffcf', m: '#180e0c', x: '#d8d2ac',
+      t: '#355846', T: '#47705a', w: '#61766b', b: '#101b18'
+    },
+    rows: defs.pouncer.rows
+  };
+  defs.axeboss = {
+    w: 32, h: 36, px: 2, boss: true,
+    pal: {
+      '.': null, o: '#090b0a',
+      g: '#776951', G: '#94856a', h: '#584c3b', d: '#463d31',
+      k: '#110c0b', e: '#ff7a45', m: '#240807', x: '#e0d2a8',
+      t: '#343b36', T: '#48534a', D: '#222824', w: '#8a4b33',
+      s: '#8f7f62', S: '#aa9877', b: '#1d1c1a', B: '#2d2b26'
+    },
+    rows: defs.boss.rows
+  };
+
   /* ---------------- 角色配色 ---------------- */
 
   /* 每套服装都要给出完整的明暗阶，否则帽檐/领口会留着上一套的颜色 */
@@ -893,6 +918,70 @@
     }
   }
 
+  /* ---------------- 锈水高速道具 ---------------- */
+
+  /* 瓦砾堆 22x16：桥面被泡散的碎块，钢筋还翘着 */
+  function rubble(px) {
+    px(1, 10, 20, 5, '#3a322a');
+    px(2, 8, 8, 4, '#5c5148');
+    px(10, 6, 9, 6, '#6b5f52');
+    px(5, 4, 7, 4, '#7a6c5c');
+    px(13, 3, 6, 4, '#8a7a68');
+    px(3, 11, 5, 2, '#2c261f');
+    px(11, 11, 6, 2, '#2c261f');
+    px(16, 8, 4, 2, '#8f5a3a');
+    px(4, 9, 2, 2, '#8f5a3a');
+    px(7, 1, 1, 4, '#8a8f96');
+    px(18, 3, 1, 4, '#767b82');
+    px(6, 13, 3, 1, '#4a4038');
+    px(15, 12, 4, 1, '#4a4038');
+  }
+
+  /* 水泥排水管 26x14：半埋在水里，管口是黑的 */
+  function pipe(px) {
+    px(0, 2, 26, 10, '#6b7178');
+    px(0, 2, 26, 2, '#868d95');
+    px(0, 10, 26, 2, '#4c5158');
+    px(1, 5, 22, 1, '#5a616a');
+    /* 管口 */
+    px(0, 2, 5, 10, '#3a3f45');
+    px(1, 3, 3, 8, '#14181c');
+    /* 锈水痕 + 缺口 */
+    px(9, 6, 2, 4, '#5e4a30');
+    px(17, 5, 3, 1, '#4c5158');
+    px(21, 8, 2, 2, '#5e4a30');
+    px(13, 11, 3, 1, '#3a3f45');
+  }
+
+  /* 侧翻轿车 28x36：车顶着地、轮子朝外，车身压在下面 */
+  function carTipped(px) {
+    /* 车顶（朝左，被压扁） */
+    px(2, 5, 8, 26, '#23262b');
+    px(3, 6, 6, 24, '#31363d');
+    px(4, 8, 4, 8, '#1b2f31');
+    px(4, 21, 4, 8, '#1b2f31');
+    /* 车身侧面 */
+    px(10, 3, 13, 30, '#3f3a33');
+    px(11, 4, 11, 28, '#514a40');
+    px(10, 3, 2, 30, '#635b4d');
+    /* 朝上的两个轮子 */
+    px(23, 6, 5, 9, '#121418');
+    px(24, 7, 3, 7, '#242a32');
+    px(23, 20, 5, 9, '#121418');
+    px(24, 21, 3, 7, '#242a32');
+    /* 车门 / 凹痕 / 锈斑 */
+    px(13, 9, 7, 1, '#2e2822');
+    px(13, 22, 7, 1, '#2e2822');
+    px(13, 10, 1, 12, '#2e2822');
+    px(15, 14, 3, 3, '#7a4a2a');
+    px(18, 26, 2, 2, '#7a4a2a');
+    px(12, 17, 1, 4, '#5c5344');
+    px(19, 5, 2, 2, '#8a8378');
+    /* 压出的水痕 */
+    px(3, 31, 22, 3, '#2b3a36');
+    px(5, 32, 16, 1, '#3a4e48');
+  }
+
   /* 路锥 10x12（纯装饰，不挡路） */
   function cone(px) {
     px(3, 10, 4, 2, '#c25a1c');
@@ -1070,6 +1159,11 @@
     veh_sedan_h: { w: 40, h: 24, draw: function (px) { vehSedan(T(px), PAL.vehSedan); } },
     veh_pickup_v: { w: 26, h: 44, draw: function (px) { vehPickup(px, PAL.vehPickup); } },
     veh_pickup_h: { w: 44, h: 26, draw: function (px) { vehPickup(T(px), PAL.vehPickup); } },
+    rubble: { w: 22, h: 16, draw: function (px) { rubble(px); } },
+    pipe_h: { w: 26, h: 14, draw: function (px) { pipe(px); } },
+    pipe_v: { w: 14, h: 26, draw: function (px) { pipe(T(px)); } },
+    car_tipped_v: { w: 28, h: 36, draw: function (px) { carTipped(px); } },
+    car_tipped_h: { w: 36, h: 28, draw: function (px) { carTipped(T(px)); } },
     barrier_h: { w: 34, h: 12, draw: function (px) { barrier(px); } },
     barrier_v: { w: 12, h: 34, draw: function (px) { barrier(T(px)); } },
     dumpster: { w: 24, h: 18, draw: function (px) { dumpster(px); } },
@@ -1087,7 +1181,7 @@
   /* ---------------- 图集帧表 -------------- */
 
   /* 敌人基础帧顺序，精英/受击变体按这个顺序自动补（boss 系不做精英变体） */
-  var enemyOrder = ['walker', 'runner', 'crawler', 'spitter', 'pouncer', 'vomiter', 'brute', 'terrorist', 'boss', 'gatling', 'stalker'];
+  var enemyOrder = ['walker', 'runner', 'crawler', 'spitter', 'pouncer', 'vomiter', 'brute', 'terrorist', 'drowner', 'boss', 'gatling', 'stalker', 'axeboss'];
 
   var frameList = [];
   var i;

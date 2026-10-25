@@ -46,7 +46,7 @@
     projCount: {
       id: 'projCount', name: '弹丸数量', icon: 'barrel', color: '#e9c46a', maxLvl: 2,
       cat: '攻击', apply: '枪械 / 投掷 / 近战目标数',
-      desc: function (l) { return '每次攻击 +' + l + ' 发弹丸（近战转为目标数 +' + l + '）'; }
+      desc: function (l) { return '每次攻击 +' + l + ' 发弹丸 / 道光束（近战转目标数）'; }
     },
 
     /* ---------------- 弹道 ---------------- */
@@ -64,6 +64,14 @@
       id: 'bounce', name: '弹射', icon: 'tesla', color: '#7ee8fa', maxLvl: 2,
       cat: '弹道', apply: '枪械 / 能量',
       desc: function (l) { return '命中后弹射到 ' + l + ' 个新目标'; }
+    },
+    chainbolt: {
+      id: 'chainbolt', name: '连锁闪电', icon: 'tesla', color: '#a8f3ff', maxLvl: 3,
+      cat: '弹道', apply: '全部武器 · 按开火次数蓄能',
+      desc: function (l) {
+        return '每 ' + HS.Data.chainNeed(l) + ' 次开火放出一道连锁闪电，跳 ' + (2 + l) +
+          ' 个目标（每跳 ' + Math.round((40 + 20 * l)) + '% 武器伤害）';
+      }
     },
     homing: {
       id: 'homing', name: '追踪', icon: 'magnet', color: '#b197fc', maxLvl: 1,
@@ -86,6 +94,41 @@
       id: 'duration', name: '持续时间', icon: 'fuel', color: '#ff8b3d', maxLvl: 3,
       cat: '范围', apply: '燃烧地面 / 区域 / 增益',
       desc: function (l) { return '地面效果与增益持续时间 +' + (l * 12) + '%'; }
+    },
+
+    /* ---------------- 元素 ----------------
+     * 这几条只对"吃得到"的武器生效，`needs` 会在 game.js 的 statOk 里当门槛用：
+     * 手上没有对应元素的武器就不会出这张卡，避免刷出点了没用的废卡。
+     * （火焰 / 冰霜 / 持续伤害自带无视护甲，所以破甲对它们无效。） */
+    burnDmg: {
+      id: 'burnDmg', name: '燃烧专精', icon: 'flamer', color: '#ff8b3d', maxLvl: 4,
+      cat: '元素', apply: '火焰 / 燃烧类', needs: 'fire',
+      desc: function (l) { return '燃烧与火焰持续伤害 +' + (l * 20) + '%'; }
+    },
+    chill: {
+      id: 'chill', name: '低温专精', icon: 'frost', color: '#9ad0ff', maxLvl: 3,
+      cat: '元素', apply: '冰霜 / 减速类', needs: 'ice',
+      desc: function (l) { return '减速 +' + (l * 6) + '%，冻结时长 +' + (l * 10) + '%'; }
+    },
+    steam: {
+      id: 'steam', name: '霜火反应', icon: 'ring', color: '#cfefff', maxLvl: 3,
+      cat: '元素', apply: '冰火同持', needs: 'both',
+      desc: function (l) { return '冰打燃烧目标时爆一次，附带 ' + (l * 60) + '% 燃烧伤害'; }
+    },
+
+    /* ---------------- 伤害 ---------------- */
+    pierceArmor: {
+      id: 'pierceArmor', name: '破甲', icon: 'ammo', color: '#d9a15b', maxLvl: 4,
+      cat: '伤害', apply: '实弹 / 近战 / 爆炸',
+      desc: function (l) { return '无视 ' + (l * 15) + '% 护甲（火焰/持续伤害不吃）'; }
+    },
+    execute: {
+      id: 'execute', name: '处决', icon: 'critdmg', color: '#ff6b6b', maxLvl: 4,
+      cat: '伤害', apply: '直接伤害 / 燃烧',
+      desc: function (l) {
+        return '生命值低于 ' + Math.round(HS.Data.execCut(l) * 100) + '% 的敌人直接被处决' +
+          '（Boss 免疫，精英阈值减半）';
+      }
     },
 
     /* ---------------- 生存 ---------------- */
@@ -175,11 +218,28 @@
     }
   };
 
+  /**
+   * 处决血线：生命值低于这个比例的敌人一命中就直接收掉。
+   * 1~4 级 12% / 17% / 22% / 28% —— 它不是"加伤"，是把残血怪一次性收干净的斩杀线。
+   */
+  HS.Data.execCut = function (lvl) {
+    var t = [0, 0.12, 0.17, 0.22, 0.28];
+    return t[lvl] || 0;
+  };
+
+  /** 连锁闪电的蓄能间隔（开火次数） */
+  HS.Data.chainNeed = function (lvl) {
+    if (lvl >= 3) return 3;
+    if (lvl === 2) return 4;
+    return 6;
+  };
+
   /** 通用属性池（不含防护装备） */
   HS.Data.passivePool = [
     'power', 'crit', 'critdmg',
+    'burnDmg', 'chill', 'steam', 'pierceArmor', 'execute',
     'haste', 'cdr', 'projCount',
-    'pierce', 'split', 'bounce', 'homing',
+    'pierce', 'split', 'bounce', 'chainbolt', 'homing',
     'range', 'blast', 'duration',
     'vigor', 'armor', 'dodge', 'lifesteal', 'regen',
     'swift', 'magnet', 'study', 'greed', 'luck'

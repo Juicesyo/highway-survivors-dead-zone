@@ -15,45 +15,77 @@
   HS.Data.props = {
     sedan: {
       id: 'sedan', w: 24, h: 40, pad: 1,
+      /* spin：废弃车辆 360° 随机朝向（绘制时旋转，碰撞走旋转矩形） */
+      spin: 1,
       vFrames: ['car_sedan_v', 'car_blue_v', 'car_burnt_v'], hFrames: ['car_sedan_h', 'car_blue_h', 'car_burnt_h'],
       solid: 1, blockBullets: 1, loot: 'car', lootChance: 0.5, crash: 11,
-      weight: { street: 22, gas: 9, garage: 34, desert: 9 }
+      weight: { street: 22, gas: 9, garage: 34, desert: 9, flood: 4 }
     },
     van: {
       id: 'van', w: 26, h: 44, pad: 1,
+      spin: 1,
       vFrames: ['car_van_v'], hFrames: ['car_van_h'],
       solid: 1, blockBullets: 1, loot: 'van', lootChance: 0.62, crash: 13,
-      weight: { street: 6, gas: 4, garage: 8, desert: 2 }
+      weight: { street: 6, gas: 4, garage: 8, desert: 2, flood: 3 }
     },
+    /* 水泥隔离墩。**w/h 必须写成竖放尺寸**（12 宽 × 34 长）：生成时竖放取
+       barrier_v(12x34)、横放取 barrier_h(34x12) 并交换 w/h。以前写反了，
+       竖着的墩子配了个 34 宽的判定，看着是根柱子、撞上去是一堵横墙。 */
     barrier: {
-      id: 'barrier', w: 34, h: 12, pad: 0,
+      id: 'barrier', w: 12, h: 34, pad: 0,
       vFrames: ['barrier_v'], hFrames: ['barrier_h'],
       solid: 1, blockBullets: 1, loot: null, crash: 8,
-      weight: { street: 24, gas: 14, garage: 16, desert: 5 }
+      /* 锈水高速不放：洪水里横七竖八的水泥墩把桥面切得太碎，整条路只剩绕障 */
+      weight: { street: 24, gas: 14, garage: 16, desert: 5, flood: 0 }
     },
     dumpster: {
       id: 'dumpster', w: 24, h: 18, pad: 1,
       vFrames: ['dumpster'], hFrames: ['dumpster'],
       solid: 1, blockBullets: 0, loot: 'dumpster', lootChance: 0.7, crash: 6,
-      weight: { street: 16, gas: 12, garage: 12, desert: 0 }
+      weight: { street: 16, gas: 12, garage: 12, desert: 0, flood: 5 }
     },
     crate: {
       id: 'crate', w: 16, h: 16, pad: 1,
       vFrames: ['crate'], hFrames: ['crate'],
       solid: 1, blockBullets: 0, loot: 'crate', lootChance: 1, crash: 2, brittle: 1,
-      weight: { street: 15, gas: 20, garage: 8, desert: 6 }
+      weight: { street: 15, gas: 20, garage: 8, desert: 6, flood: 10 }
     },
     tires: {
       id: 'tires', w: 18, h: 18, pad: 2,
       vFrames: ['tires'], hFrames: ['tires'],
       solid: 1, blockBullets: 0, loot: null, crash: 4,
-      weight: { street: 10, gas: 11, garage: 12, desert: 4 }
+      weight: { street: 10, gas: 11, garage: 12, desert: 4, flood: 7 }
     },
     cone: {
       id: 'cone', w: 10, h: 12, pad: 0,
       vFrames: ['cone'], hFrames: ['cone'],
       solid: 0, blockBullets: 0, loot: null, crash: 0,
-      weight: { street: 19, gas: 14, garage: 4, desert: 10 }
+      weight: { street: 19, gas: 14, garage: 4, desert: 10, flood: 7 }
+    },
+
+    /* ---------- 锈水高速专属：让桥面不只剩"一排车" ---------- */
+
+    /* 桥面碎块：被水泡散的混凝土，能挡路也能被车直接压碎 */
+    rubble: {
+      id: 'rubble', w: 22, h: 16, pad: 1,
+      vFrames: ['rubble'], hFrames: ['rubble'],
+      solid: 1, blockBullets: 0, loot: null, crash: 3, brittle: 1,
+      weight: { flood: 14 }
+    },
+    /* 半埋的排水管：低矮，挡子弹 */
+    pipe: {
+      id: 'pipe', w: 14, h: 26, pad: 1,
+      vFrames: ['pipe_v'], hFrames: ['pipe_h'],
+      solid: 1, blockBullets: 1, loot: null, crash: 9,
+      weight: { flood: 10 }
+    },
+    /* 侧翻轿车：横躺、车顶着地 —— 一眼就和"停得笔直的车"区分开 */
+    tipped: {
+      id: 'tipped', w: 28, h: 36, pad: 1,
+      spin: 1,
+      vFrames: ['car_tipped_v'], hFrames: ['car_tipped_h'],
+      solid: 1, blockBullets: 1, loot: 'car', lootChance: 0.5, crash: 10,
+      weight: { flood: 8 }
     },
 
     /* ---------- 荒漠公路专属：让路边不是一片空白 ---------- */
@@ -70,7 +102,7 @@
       id: 'signpost', w: 16, h: 24, pad: 1,
       vFrames: ['signpost'], hFrames: ['signpost'],
       solid: 1, blockBullets: 0, loot: null, crash: 3, brittle: 1,
-      weight: { desert: 13 }
+      weight: { desert: 13, flood: 10 }
     },
     /* 汽车旅馆的立牌：比路牌高，一眼就能认出"这里有人住过" */
     motelsign: {
@@ -116,5 +148,7 @@
   };
 
   /** 每张地图的「有道具的区块比例」 */
-  HS.Data.propDensity = { street: 0.55, desert: 0.34 };
+  /* flood 的可摆位置只有中间那条桥带（两侧全是深水，候选点大量被拒），
+     0.42 实际落地只剩零星几件，所以单独抬到 0.52 */
+  HS.Data.propDensity = { street: 0.55, desert: 0.34, flood: 0.52 };
 })();

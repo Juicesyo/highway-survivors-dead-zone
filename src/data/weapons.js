@@ -167,8 +167,9 @@
       onHit: 'pull'
     },
     {
+      /* tube：管式发射器，从枪口打出去（不像手雷那样抬手扔） */
       id: 'gl', name: '榴弹发射器', art: 'launcher', fam: 'explosive', mech: 'lob', rarity: 3,
-      desc: '抛射榴弹，落地炸开一片', tags: ['explosive'],
+      desc: '抛射榴弹，落地炸开一片', tags: ['explosive'], tube: 1,
       base: { cd: 1.55, dmg: 24, radius: 30, range: 200 }, g: { dmg: 0.18, cd: 0.05, radius: 1.2 }
     },
     {
@@ -182,6 +183,24 @@
       base: { cd: 0.16, dmg: 5.5, range: 92, arc: 0.52, dps: 0, dur: 2 }, g: { dmg: 0.16, cd: 0.03, range: 0.03 }
     },
     {
+      /* 冷冻射流：直伤比火焰低一档，换来的是一整片减速 + 冻结标记。
+         已冻住的目标吃 1.6 倍伤害 —— 这把枪先手弱、后手强，和冰霜环/暴击燃烧
+         两条联动都能挂上（见 combat.js 的 synFrozen 消费点）。
+         art 用 flamer 的手持喷嘴，icon 走 frost，不新增美术。 */
+      id: 'cryo', name: '液氮喷枪', art: 'flamer', icon: 'frost', fam: 'energy', mech: 'flame',
+      rarity: 3, elem: 'ice', desc: '低温射流冻住一片，越冻越脆', tags: ['ice', 'energy'],
+      base: { cd: 0.16, dmg: 4.6, range: 88, arc: 0.44, slow: 0.45, dur: 1.4 },
+      g: { dmg: 0.15, cd: 0.03, range: 0.03, slow: 0.02 }
+    },
+    {
+      /* 龙息喷枪：射程和火焰喷射器错开（124 vs 92），扇面更窄、单发更重、
+         燃烧时间翻倍以上。烧死的目标会炸开并点燃周围，适合站桩烧一整排。 */
+      id: 'napalm', name: '龙息喷枪', art: 'flamer', fam: 'energy', mech: 'flame',
+      rarity: 3, elem: 'fire', napalm: 1, desc: '中距离长燃，烧死的会炸开', tags: ['fire', 'energy'],
+      base: { cd: 0.22, dmg: 6.8, range: 124, arc: 0.3, dur: 5 },
+      g: { dmg: 0.16, cd: 0.03, range: 0.025, dur: 0.08 }
+    },
+    {
       id: 'taser', name: '电击枪', art: 'tesla', fam: 'energy', mech: 'chain', rarity: 2,
       desc: '电弧在敌群中跳跃', tags: ['energy'],
       base: { cd: 0.9, dmg: 16, range: 130, chains: 3 }, g: { dmg: 0.18, cd: 0.05, chains: 0.5 }
@@ -190,6 +209,18 @@
       id: 'laser', name: '激光步枪', art: 'laser', fam: 'energy', mech: 'beam', rarity: 3,
       desc: '瞬时光束，一条线上的敌人一起烧', tags: ['energy'],
       base: { cd: 0.35, dmg: 9, range: 260, pierce: 2, width: 5 }, g: { dmg: 0.16, cd: 0.04, pierce: 0.5 }
+    },
+    {
+      /* 持续光束：没有上膛/冷却这一说，固定 0.08s 一跳，只要有敌人就一直烧着。
+         代价是**完全不吃射速与冷却**（攻速 / 暴走 / 过热加速都无效）——
+         base.cd 在这里是"跳的间隔"而不是上膛时间，持续型分支直接读它，
+         不经过 rate / cdr 折算，所以加快攻速不会让它跳得更密。
+         宽度比激光步枪粗一档（8 vs 5），红色判定线一眼能认出是哪把枪。 */
+      id: 'redlaser', name: '红莲切割者', art: 'laser', fam: 'energy', mech: 'beam',
+      rarity: 4, color: '#ff3b30', sustainBeam: 1, desc: '持续不断的红色光束，不吃射速',
+      tags: ['energy'],
+      base: { cd: 0.08, dmg: 2.0, range: 235, pierce: 2, width: 8 },
+      g: { dmg: 0.16, range: 0.03, width: 0.5 }
     }
   ]);
 
@@ -314,23 +345,25 @@
     fam: 'explosive', mech: 'lob', color: '#ff9f43', rarity: 2, tags: ['explosive']
   }, [
     {
-      id: 'molotov', name: '燃烧瓶', art: 'molotov', desc: '砸出一片火海，封锁走位',
+      id: 'molotov', name: '燃烧瓶', art: 'molotov', color: '#ff6b35', desc: '砸出一片火海，封锁走位',
+      tags: ['explosive', 'fire'],
       base: { cd: 4.0, dmg: 12, radius: 34, dps: 10, dur: 3.5, range: 190 }, g: { dmg: 0.16, cd: 0.05, radius: 1.4, dps: 0.15 }
     },
     {
-      id: 'frag', name: '手雷', art: 'grenade', rarity: 2, desc: '拉环抛投，落地开花',
+      id: 'frag', name: '手雷', art: 'grenade', rarity: 2, color: '#ffb347', desc: '拉环抛投，落地开花',
       base: { cd: 3.0, dmg: 45, radius: 36, range: 195 }, g: { dmg: 0.18, cd: 0.05, radius: 1.2 }
     },
     {
-      id: 'stickybomb', name: '黏性炸弹', art: 'grenade', rarity: 3, desc: '粘上就炸，中心伤害更高',
+      id: 'stickybomb', name: '黏性炸弹', art: 'grenade', rarity: 3, color: '#e3b23c', desc: '粘上就炸，中心伤害更高',
       base: { cd: 3.4, dmg: 62, radius: 30, range: 175 }, g: { dmg: 0.2, cd: 0.05, radius: 1.0 }
     },
     {
-      id: 'flashbang', name: '闪光弹', art: 'grenade', rarity: 2, desc: '白屏震眩，打断进攻节奏',
+      id: 'flashbang', name: '闪光弹', art: 'grenade', rarity: 2, color: '#eef4ff', desc: '白屏震眩，打断进攻节奏',
       base: { cd: 4.6, dmg: 6, radius: 46, stun: 1.8, range: 180 }, g: { dmg: 0.12, cd: 0.05, radius: 1.2, stun: 0.12 }
     },
     {
-      id: 'cryogrenade', name: '冰冻手雷', art: 'frost', rarity: 3, desc: '整片区域冻住，方便拉开距离',
+      id: 'cryogrenade', name: '冰冻手雷', art: 'frost', rarity: 3, color: '#9ad0ff', desc: '整片区域冻住，方便拉开距离',
+      tags: ['explosive', 'ice'],
       base: { cd: 4.4, dmg: 18, radius: 40, slow: 0.7, dur: 3, range: 180 }, g: { dmg: 0.16, cd: 0.05, radius: 1.2 }
     }
   ]);
@@ -349,8 +382,11 @@
       effect: 'lure'
     },
     {
-      id: 'smoke', name: '烟雾发射器', art: 'grenade', desc: '烟雾里它们会慢下来',
-      base: { cd: 6.5, dmg: 4, radius: 48, dps: 0, slow: 0.35, dur: 6, range: 200 }, g: { radius: 1.2, dur: 0.08 },
+      /* 烟雾的定位是"反远程"，不是又一个减速：
+         烟幕会吃掉穿过去的敌方子弹/酸液，烟里的持枪匪徒和吐酸者也开不了火。
+         减速只留一点点做附带，免得和冰冻手雷 / 冰霜发生器撞定位。 */
+      id: 'smoke', name: '烟雾发射器', art: 'grenade', desc: '烟幕遮断远程攻击，里面看不清你',
+      base: { cd: 5.5, dmg: 4, radius: 50, dps: 0, slow: 0.22, dur: 6, range: 200 }, g: { radius: 1.2, dur: 0.08 },
       effect: 'smoke'
     },
     {
@@ -395,7 +431,9 @@
       base: { cd: 0.7, dmg: 22, range: 26, arc: 0.9, targets: 1, knock: 12 }, g: { dmg: 0.18, cd: 0.05 }
     },
     {
-      id: 'grapnel', name: '链锁钩爪', art: 'harpoon', rarity: 3, mech: 'bullet', desc: '甩出钩爪，把远处的拽过来打',
+      id: 'grapnel', name: '链锁钩爪', art: 'harpoon', rarity: 3, mech: 'bullet', desc: '甩出钩爪，把远处的拽到面前',
+      /* 钩爪要拽到"能立刻砍到"的距离：贴身 16px 停手、拽掉剩余距离的 90% */
+      pullStop: 16, pullK: 0.9,
       base: { cd: 2.2, dmg: 15, range: 155, speed: 380, pierce: 1 }, g: { dmg: 0.17, cd: 0.06 },
       onHit: 'pull'
     },
@@ -447,7 +485,7 @@
       base: { cd: 3.0, dmg: 110, radius: 58, range: 300, speed: 190 }, g: { dmg: 0.2, cd: 0.06, radius: 1.6 }
     },
     {
-      id: 'mortar', name: '迫击炮', art: 'mortar', fam: 'explosive', mech: 'lob',
+      id: 'mortar', name: '迫击炮', art: 'mortar', fam: 'explosive', mech: 'lob', tube: 1,
       move: 0.72, desc: '抛射到远处落点，覆盖一整片', tags: ['explosive', 'heavy'],
       base: { cd: 2.9, dmg: 82, radius: 68, range: 300 }, g: { dmg: 0.18, cd: 0.05, radius: 1.6 }
     },
@@ -564,6 +602,14 @@
       id: 'flamer_x', name: '烈焰风暴', req: { stat: 'range', statLvl: 2 },
       desc: '火舌更长更宽，一路烧过去', mul: { dmg: 1.5, range: 1.5, arc: 1.4, cd: 0.8 }
     },
+    cryo: {
+      id: 'cryo_x', name: '永冻核心', req: { stat: 'duration', statLvl: 2 },
+      desc: '冷媒无限循环，整片区域一起结霜', mul: { dmg: 1.4, range: 1.25, arc: 1.4, slow: 0.15, cd: 0.85 }
+    },
+    napalm: {
+      id: 'napalm_x', name: '焦土', req: { stat: 'duration', statLvl: 2 },
+      desc: '火舌拉成一条焚化带，烧穿整排', mul: { dmg: 1.5, range: 1.3, arc: 1.35, dur: 1.6, cd: 0.85 }
+    },
     taser: {
       id: 'taser_x', name: '雷神之怒', req: { stat: 'bounce', statLvl: 1 },
       desc: '电弧连锁全场，几乎没有死角', mul: { dmg: 1.6, cd: 0.75, chains: 4 }
@@ -571,6 +617,10 @@
     laser: {
       id: 'laser_x', name: '裂解光束', req: { stat: 'pierce', statLvl: 2 },
       desc: '光束加宽，贯穿线上的一切', mul: { dmg: 1.6, cd: 0.8, width: 2.2, pierce: 4 }
+    },
+    redlaser: {
+      id: 'redlaser_x', name: '熔核过载', req: { stat: 'power', statLvl: 3 },
+      desc: '光束烧到发白，一路切穿车壳与尸群', mul: { dmg: 1.45, width: 1.3, range: 1.15 }
     },
     saber: {
       id: 'saber_x', name: '剑气风暴', req: { stat: 'haste', statLvl: 2 },
@@ -800,7 +850,56 @@
     }
   })();
 
-  /** 稀有度 → 新装备出现权重 */
+  /**
+   * 武器强度分（按 1 级基础值算）
+   *
+   * 抽取权重按"这玩意儿到底打得多狠"来给，而不是按稀有度标签给 ——
+   * 稀有度只是个展示属性，真正决定该多常见的应该是它的实际战力：
+   *   单体输出   dmg × 弹量 ÷ 冷却
+   *   覆盖面     爆炸半径 / 穿透 / 连锁 / 近战目标数
+   *   持续控场   燃烧时长 / 减速 / 眩晕
+   *   功能价值   治疗量这类不带 DPS 的（否则医疗针会被判成最弱）
+   * 短射程是拿命换的（贴身才能打），重型还拖慢脚步，这两项各打一折。
+   */
+  D.gearPower = function (id) {
+    var d = D.gear[id];
+    if (!d) return 0;
+    if (d._pw !== undefined) return d._pw;
+    var b = d.base || {};
+    var p = (b.dmg || 0) * (b.count || 1) / Math.max(0.12, b.cd || 0.5);
+    p += Math.min(6, b.pierce || 0) * 2;
+    p += Math.min(60, b.radius || 0) * 1.2;
+    p += (b.chains || 0) * 4;
+    p += Math.max(0, (b.targets || 1) - 1) * 3;
+    p += (b.dur || 0) * 4;
+    p += (b.slow || 0) * 14;
+    p += (b.stun || 0) * 6;
+    p += (b.heal || 0) * 220;
+    if (b.range > 0 && b.range < 70) p *= 0.88;
+    if (d.move && d.move < 1) p *= 0.9;
+    d._pw = p;
+    return p;
+  };
+
+  /**
+   * 抽取权重：强度越高越稀有
+   *
+   * 40 分（手枪档）当 1.0 基准，越强按 0.85 次幂往下压，最狠的压到 0.45、
+   * 最杂鱼的抬到 2.2 —— 也就是"最强的比最弱的少见约 5 倍"。
+   * 不设 floor 会让顶级武器变成都市传说，不设 cap 会让杂鱼刷屏。
+   */
+  D.gearWeight = function (id) {
+    var d = D.gear[id];
+    if (!d) return 1;
+    if (d._gw !== undefined) return d._gw;
+    var p = D.gearPower(id);
+    var w = Math.pow(40 / Math.max(14, p), 0.85);
+    w = Math.max(0.45, Math.min(2.2, w));
+    d._gw = Math.round(w * 100) / 100;
+    return d._gw;
+  };
+
+  /** 稀有度 → 新装备出现权重（历史表格，仅作展示档位参考，抽取已改走 gearWeight） */
   D.rarityWeight = { 1: 10, 2: 6, 3: 3.2, 4: 1.4, 5: 0.4 };
 
   /** 兼容旧代码：HS.Data.weapons 指向同一张表 */

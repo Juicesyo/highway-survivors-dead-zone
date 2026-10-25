@@ -767,8 +767,9 @@
     text(ctx, '选择死区', W * 0.07, H * 0.09, 24, C.text, 'left', true);
     text(ctx, '存活 6 分钟，击杀区域首领', W * 0.07, H * 0.125, 11.5, C.dim, 'left', false);
 
-    var top = H * 0.16;
-    var ch = fs(96), gap = fs(12);
+    var top = H * 0.145;
+    var gap = fs(8);
+    var ch = Math.min(fs(76), (H * 0.61 - top - gap * (D.mapOrder.length - 1)) / D.mapOrder.length);
 
     for (var i = 0; i < D.mapOrder.length; i++) {
       var m = D.maps[D.mapOrder[i]];
@@ -780,19 +781,22 @@
         sel ? 'rgba(255,90,60,0.13)' : 'rgba(255,255,255,0.045)',
         sel ? 'rgba(255,90,60,0.7)' : C.line);
 
-      text(ctx, m.name, W * 0.06 + fs(16), y + fs(24), 17, locked ? C.dim : C.text, 'left', true);
+      text(ctx, m.name, W * 0.06 + fs(16), y + fs(18), 16, locked ? C.dim : C.text, 'left', true);
       /* 地图的特殊规则挂一个标签，别让玩家进去才发现"射程怎么变短了" */
       if (m.night) {
         text(ctx, '夜间 · 射程 -' + Math.round((1 - (m.rangeMul || 1)) * 100) + '%',
-          W * 0.06 + W * 0.88 - fs(44), y + fs(24), 10, '#7ee8fa', 'right', true);
+          W * 0.06 + W * 0.88 - fs(44), y + fs(18), 9.5, '#7ee8fa', 'right', true);
       } else if (m.gunmen) {
-        text(ctx, '枪手出没', W * 0.06 + W * 0.88 - fs(44), y + fs(24), 10, '#ff9f43', 'right', true);
+        text(ctx, '枪手出没', W * 0.06 + W * 0.88 - fs(44), y + fs(18), 9.5, '#ff9f43', 'right', true);
+      } else if (m.water) {
+        text(ctx, '积水 · 导电', W * 0.06 + W * 0.88 - fs(38), y + fs(18), 9.5, '#8fd8c7', 'right', true);
       }
       var prevName = D.maps[D.mapOrder[Math.max(0, D.mapOrder.indexOf(m.id) - 1)]].name;
       text(ctx, locked ? ('通关「' + prevName + '」解锁')
         : ('经验 x' + m.xpMul.toFixed(2) + '  搜刮 x' + m.goldMul.toFixed(2) + '  通关 +' + (m.clearGold || 0)),
-        W * 0.06 + fs(16), y + fs(48), 10.5, locked ? '#d08a5a' : C.gold, 'left', false);
-      text(ctx, m.desc, W * 0.06 + fs(16), y + fs(68), 10, C.dim, 'left', false);
+        W * 0.06 + fs(16), y + fs(37), 9.5, locked ? '#d08a5a' : C.gold, 'left', false);
+      var mds = wrap2(ctx, m.desc, W * 0.88 - fs(32), 9);
+      text(ctx, mds[1] ? mds[0].replace(/.$/, '…') : mds[0], W * 0.06 + fs(16), y + fs(53), 9, C.dim, 'left', false);
 
       if (!locked) {
         g.hits.push({ id: 'map:' + m.id, x: W * 0.06, y: y, w: W * 0.88, h: ch });
@@ -1021,14 +1025,18 @@
       text(ctx, '感染者 ' + eSeen + '/' + eTotal, ax, rowY, 11, eSeen ? C.text : C.dim, 'left');
       text(ctx, '首领 ' + bSeen + '/' + bTotal, ax + aw * 0.46, rowY, 11, bSeen ? '#ff8a8a' : C.dim, 'left');
 
-      /* 首领固定三格：没打过的用 ??? 占位，玩家一眼知道还差谁 */
-      var bTxt = '', bi, bd;
-      for (bi = 0; bi < bDefs.length; bi++) {
-        bd = bDefs[bi];
-        bTxt += (bTxt ? ' · ' : '') + (seenE.indexOf(bd.id) >= 0 ? bd.name : '???');
+      /* 首领每行两位，新增 Boss 也不会把一行顶出屏幕。 */
+      var bLines = [], bi, bd;
+      for (bi = 0; bi < bDefs.length; bi += 2) {
+        var bParts = [];
+        for (var bj = bi; bj < Math.min(bi + 2, bDefs.length); bj++) {
+          bd = bDefs[bj];
+          bParts.push(seenE.indexOf(bd.id) >= 0 ? bd.name : '???');
+        }
+        bLines.push(bParts.join(' · '));
       }
-      if (bTxt) {
-        text(ctx, '· ' + bTxt, ax, rowY + fs(17), 9.5, 'rgba(255,138,138,0.75)', 'left', false);
+      for (bi = 0; bi < bLines.length; bi++) {
+        text(ctx, '· ' + bLines[bi], ax, rowY + fs(17) + bi * fs(13), 9.5, 'rgba(255,138,138,0.75)', 'left', false);
       }
 
       /* 感染者名单：每行最多四个，名字多了自动换行，不会顶出屏幕 */
@@ -1041,7 +1049,7 @@
       for (li = 0; li < eNames.length; li += 4) eLines.push(eNames.slice(li, li + 4).join(' · '));
       if (eLeft > 0) eLines.push('还有 ' + eLeft + ' 种未遭遇');
       if (!eLines.length) eLines.push('尚未遭遇');
-      var lineY = rowY + fs(30);
+      var lineY = rowY + fs(30) + Math.max(0, bLines.length - 1) * fs(13);
       for (li = 0; li < eLines.length; li++) {
         text(ctx, '· ' + eLines[li], ax, lineY + li * fs(14), 9, 'rgba(139,149,163,0.75)', 'left', false);
       }
@@ -1866,8 +1874,7 @@
         if (!ent.up[k] || !ups[k]) continue;
         upTxt += (upTxt ? ' · ' : ' · ') + ups[k].name + ' Lv' + ent.up[k];
       }
-      text(ctx, d.name + ' Lv' + ent.lvl + upTxt +
-        (label === '主武器' && p.mainLocked ? '（已锁定）' : ''),
+      text(ctx, d.name + ' Lv' + ent.lvl + upTxt,
         px + fs(64), y, 9.5, ent.evolved ? C.gold : C.text, 'left', true);
     }
     slotRow('主武器', mainE, rowY);

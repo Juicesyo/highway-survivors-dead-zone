@@ -54,11 +54,13 @@ ck('未通关金币 = 只有搜刮', G.run.result.gold === 17, String(G.run.resu
 
 /* 3. 选图页写明通关奖励 */
 G.state = 'mapselect';
-HS.Save.data.unlockedMaps = ['highway', 'night', 'desert'];
+HS.Save.data.unlockedMaps = ['highway', 'night', 'desert', 'flood'];
 logs = grab(() => HS.UI.mapSelect(G));
 const lines = logs.filter(l => /通关 \+/.test(l.t)).map(l => l.t);
-ck('三张图都标了通关奖励', lines.length === 3, lines.join(' | '));
-ck('奖励数额 30 / 50 / 80', lines[0].indexOf('+30') > 0 && lines[1].indexOf('+50') > 0 && lines[2].indexOf('+80') > 0);
+ck('四张图都标了通关奖励', lines.length === 4, lines.join(' | '));
+ck('奖励数额 30 / 50 / 80 / 110',
+  lines[0].indexOf('+30') > 0 && lines[1].indexOf('+50') > 0 &&
+  lines[2].indexOf('+80') > 0 && lines[3].indexOf('+110') > 0);
 
 console.log(bad ? '\n' + bad + ' 项失败' : '\n全部通过');
 process.exit(bad ? 1 : 0);

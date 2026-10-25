@@ -39,7 +39,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /* 全自动开局：把所有地图解锁，免得截图时还要先通关一次 */
 const unlockAll = `(function () {
-  HS.Save.data.unlockedMaps = ['highway', 'night', 'desert'];
+  HS.Save.data.unlockedMaps = ['highway', 'night', 'desert', 'flood'];
   HS.Save.data.gold = 460;
   HS.Save.data.chars = HS.Save.data.chars || [];
   return true;
@@ -68,7 +68,7 @@ const STEPS = [
   },
   {
     name: 'mapselect',
-    desc: '选图页：三张地图按通关顺序解锁',
+    desc: '选图页：四张地图按通关顺序解锁',
     act: `HS.Game.activate('start')`,
     wait: 500
   },
@@ -81,10 +81,71 @@ const STEPS = [
     settle: 1300
   },
   {
+    name: 'execute',
+    desc: '处决：血线以下的敌人一命中就当场斩杀',
+    act: `HS.Game.startRun('highway', 'soldier')`,
+    wait: 5200,
+    fill: `(function () {
+      var G = HS.Game, p = G.run.p;
+      G.state = 'run';
+      p.passives.execute = 4; G.recalc(p);
+      G.run.enemies.length = 0;
+      var ids = [];
+      for (var i = 0; i < 5; i++) {
+        var e = G.spawnEnemy('walker', false, p.x + 30 + (i % 3) * 20, p.y - 26 + i * 15);
+        e.maxHp = 100; e.hp = 18; e.armor = 0;
+        ids.push(e.uid);
+      }
+      /* 只打前三只：血线以下直接处决，后两只留着做对照 */
+      for (var k = 0; k < 3; k++) {
+        var t = null;
+        for (var j = 0; j < G.run.enemies.length; j++) {
+          if (G.run.enemies[j].uid === ids[k]) t = G.run.enemies[j];
+        }
+        if (t) G.hurtEnemy(t, 1, { noCrit: true });
+      }
+      return 'exec=' + G.run.kills;
+    })()`,
+    settle: 60
+  },
+  {
+    name: 'railorb',
+    desc: '电磁轨道球：过载放电拉出电弧，贴脸的怪也照打',
+    act: `HS.Game.startRun('highway', 'soldier')`,
+    wait: 5200,
+    fill: `(function () {
+      var G = HS.Game, p = G.run.p, i;
+      G.state = 'run';
+      p.autos.length = 0;
+      p.autos.push({ id: 'railorb', lvl: 5, timer: 0, up: {}, ang: 0, uid: 21 });
+      HS.Gear.refresh(p); G.recalc(p);
+      G.run.enemies.length = 0;
+      G.run.chains.length = 0;
+      for (i = 0; i < 6; i++) {
+        var a = i / 6 * Math.PI * 2;
+        var e = G.spawnEnemy('walker', false, p.x + Math.cos(a) * 42, p.y + Math.sin(a) * 36);
+        e.hp = e.maxHp = 1e9;
+        e.speed = 0;
+      }
+      /* 手动触发一次过载，把电弧和扩散环摆到画面里 */
+      p.autos[0].pulseT = 99;
+      HS.Auto.update(G.run, 1 / 60);
+      HS.Auto.update(G.run, 1 / 60);
+      return 'chains=' + G.run.chains.length;
+    })()`,
+    settle: 40
+  },
+  {
     name: 'levelup',
     desc: '升级三选一：卡面 + 底部重抽',
-    act: `HS.Game.gainXp(70)`,
-    wait: 700
+    act: `(function () {
+      var G = HS.Game;
+      G.startRun('highway', 'soldier');   // 单独出这一张时也要先建局面
+      G.state = 'run';
+      G.gainXp(70);
+      return G.state;
+    })()`,
+    wait: 900
   },
   {
     name: 'boss',
@@ -142,6 +203,225 @@ const STEPS = [
     wait: 5000,
     fill: surround(['terrorist', 'walker', 'terrorist', 'runner']),
     settle: 1500
+  },
+  {
+    name: 'flood',
+    desc: '锈水高速：积水反光、半沉车辆、水鬼与呕酸尸',
+    act: `HS.Game.startRun('flood', 'soldier')`,
+    wait: 5200,
+    fill: surround(['drowner', 'walker', 'vomiter', 'drowner', 'brute']),
+    settle: 1500
+  },
+  {
+    name: 'flooddive',
+    desc: '水鬼潜渡：水下只剩一圈涟漪，正在横穿深水靠近',
+    act: `HS.Game.startRun('flood', 'soldier')`,
+    wait: 5200,
+    fill: `(function () {
+      var G = HS.Game, p = G.run.p;
+      G.state = 'run';
+      var a = G.spawnEnemy('drowner', false, p.x + 96, p.y + 12);
+      a.subState = 2; a.subT = 99; a.submerged = true;
+      a.subAng = Math.atan2(p.y - a.y, p.x - a.x);
+      var b = G.spawnEnemy('drowner', false, p.x - 96, p.y + 34);
+      b.subState = 1; b.subT = 0.3;
+      var c = G.spawnEnemy('drowner', false, p.x + 22, p.y - 108);
+      c.subState = 2; c.subT = 99; c.submerged = true;
+      c.subAng = Math.PI * 0.5;
+      for (var i = 0; i < 5; i++) G.spawnEnemy('walker', false,
+        p.x + (i % 2 ? 1 : -1) * (40 + i * 22), p.y - 62 + i * 18);
+      return a.uid + '/' + b.uid + '/' + c.uid;
+    })()`,
+    settle: 380
+  },
+  {
+    name: 'floodwade',
+    desc: '深水能走了：蹚水只剩三成速度，脚下留着涟漪',
+    act: `HS.Game.startRun('flood', 'soldier')`,
+    wait: 5200,
+    fill: `(function () {
+      var G = HS.Game, p = G.run.p, i;
+      G.state = 'run';
+      var spot = null;
+      for (i = 0; i < 260 && !spot; i++) {
+        var x = 96 + (i % 44) * 2;
+        var y = -70 + Math.floor(i / 44) * 16;
+        if (HS.Water.zone(x, y, G.run) === 2) spot = { x: x, y: y };
+      }
+      if (spot) { p.x = spot.x; p.y = spot.y; }
+      p.gait = 1;
+      /* 连踩两脚：两批波纹错开相位，画面里才看得出"在蹚水" */
+      for (i = 0; i < 2; i++) { p.wadeT = 0; HS.Water.update(G.run, 1 / 60); }
+      for (i = 0; i < 2; i++) {
+        G.spawnEnemy('walker', false, p.x + 74 + i * 16, p.y - 44 + i * 30);
+      }
+      G.spawnEnemy('drowner', false, p.x - 96, p.y + 26);
+      return 'z=' + HS.Water.zone(p.x, p.y, G.run) +
+        ' spd=' + HS.Water.speed(p, G.run).toFixed(2);
+    })()`,
+    settle: 90
+  },
+  {
+    name: 'launcher',
+    desc: '榴弹发射器：从枪口打出去（后坐 + 枪口焰），不再做投掷动作',
+    act: `HS.Game.startRun('highway', 'soldier')`,
+    wait: 5200,
+    fill: `(function () {
+      var G = HS.Game, p = G.run.p;
+      G.state = 'run';
+      HS.Gear.clearHands(p);
+      HS.Gear.take(p, 'gl');
+      G.recalc(p);
+      G.run.vehicles.length = 0;
+      G.run.enemies.length = 0;
+      G.spawnEnemy('walker', false, p.x + 96, p.y - 34);
+      G.spawnEnemy('walker', false, p.x + 112, p.y + 6);
+      p.aimA = -0.2; p.facing = 1;
+      p.throws.length = 0;
+      var ent = HS.Gear.mainEntry(p);
+      HS.Gear.fire(ent, HS.Data.gear[ent.id], HS.Gear.stat(ent, p), false);
+      /* 让炮弹飞出去一小段，画面里能看到弹体 */
+      for (var f = 0; f < 8; f++) G.updateBullets(1 / 60);
+      return 'throws=' + p.throws.length + ' shells=' + G.run.bullets.length;
+    })()`,
+    settle: 40
+  },
+  {
+    name: 'harpoon',
+    desc: '鱼叉枪：命中把敌人拽近，拖出一道锁链',
+    act: `HS.Game.startRun('desert', 'soldier')`,
+    wait: 5200,
+    fill: `(function () {
+      var G = HS.Game, p = G.run.p;
+      G.state = 'run';
+      HS.Gear.clearHands(p);
+      HS.Gear.take(p, 'harpoon');
+      G.recalc(p);
+      G.run.enemies.length = 0;
+      G.run.chains.length = 0;
+      G.run.vehicles.length = 0;     // 别让路边车挡下这发叉
+      var e = G.spawnEnemy('walker', false, p.x + 96, p.y - 96);
+      e.hp = e.maxHp = 1e9;
+      e.speed = 0;
+      p.aimA = -Math.PI / 4; p.facing = 1;   // 斜着射，锁链才不和枪管重叠
+      var ent = HS.Gear.mainEntry(p);
+      HS.Gear.fire(ent, HS.Data.gear[ent.id], HS.Gear.stat(ent, p), true);
+      for (var f = 0; f < 40 && G.run.bullets.length; f++) G.updateBullets(1 / 60);
+      var d = Math.hypot(e.x - p.x, e.y - p.y);
+      /* 万一这发被道具挡下（街上有隔离墩），直接走命中结算，保证图上有锁链 */
+      if (d > 120) { G.bulletEffect({ effect: 'pull' }, e, p); d = Math.hypot(e.x - p.x, e.y - p.y); }
+      return 'dist=' + Math.round(d);
+    })()`,
+    settle: 40
+  },
+  {
+    name: 'floodprops',
+    desc: '锈水高速路面道具：侧翻车、瓦砾、排水管，车不再一律顺着路摆',
+    act: `HS.Game.startRun('flood', 'soldier')`,
+    wait: 5200,
+    fill: `(function () {
+      var G = HS.Game, p = G.run.p, buf = [];
+      G.state = 'run';
+      var best = null, bestN = -1;
+      for (var x = -900; x <= 900; x += 56) {
+        for (var y = -900; y <= 900; y += 56) {
+          buf.length = 0;
+          HS.World.queryRect(x - 104, y - 82, x + 104, y + 82, buf);
+          var n = 0, kinds = '';
+          for (var i = 0; i < buf.length; i++) { n++; kinds += buf[i].type + ','; }
+          if (kinds.indexOf('tipped') < 0) continue;
+          if (n > bestN) { bestN = n; best = { x: x, y: y }; }
+        }
+      }
+      if (best) {
+        for (var r = 0; r < 40; r++) {
+          var a = r * 2.4, rr = r * 4;
+          var tx = best.x + Math.cos(a) * rr, ty = best.y + Math.sin(a) * rr;
+          if (HS.Water.zone(tx, ty, G.run) !== 2 && !HS.World.insideSolid(tx, ty)) {
+            p.x = tx; p.y = ty; break;
+          }
+        }
+      }
+      for (var k = 0; k < 4; k++) {
+        G.spawnEnemy('walker', false, p.x + (k % 2 ? 1 : -1) * (48 + k * 14), p.y + 40 + k * 10);
+      }
+      return (best ? 'props=' + bestN : 'none');
+    })()`,
+    settle: 420
+  },
+  {
+    name: 'chainbolt',
+    desc: '连锁闪电：蓄满几次开火就拉出一道电弧，连跳多个目标',
+    act: `HS.Game.startRun('flood', 'soldier')`,
+    wait: 5200,
+    fill: `(function () {
+      var G = HS.Game, p = G.run.p;
+      G.state = 'run';
+      p.passives.chainbolt = 3; G.recalc(p);
+      G.run.enemies.length = 0;
+      for (var i = 0; i < 6; i++) {
+        G.spawnEnemy('walker', false, p.x + 30 + (i % 3) * 24, p.y - 44 + i * 18);
+      }
+      G.run.chains.length = 0;
+      G.chainBolt(36, 5);
+      return 'chains=' + G.run.chains.length;
+    })()`,
+    settle: 90
+  },
+  {
+    name: 'floodboss',
+    desc: '断堤巨斧：双斧交叉斩的扇形预警与深水坑',
+    act: `(function () {
+      var G = HS.Game, guard = 0;
+      G.startRun('flood', 'soldier');
+      while (G.state === 'levelup' && guard++ < 20) {
+        G.pickChoice(0);
+        if (G.confirm) G.confirmSwap(true);
+      }
+      G.state = 'run';
+      G.run.t = 355; G.run.kills = 188;
+      G.spawnBoss();
+      var b = G.run.boss, p = G.run.p;
+      p.invuln = 90; p.hp = p.maxHp;
+      if (b) {
+        b.x = p.x - 6; b.y = p.y + 104;
+        b.aSt = 1; b.aT = 2.2; b.aAim = Math.atan2(p.y - b.y, p.x - b.x);
+        HS.Water.breakTerrain(p.x + 84, p.y + 26, 34, G.run);
+        HS.Water.breakTerrain(p.x - 96, p.y - 30, 28, G.run);
+      }
+      return (b ? b.def.id : 'none') + ' / ' + G.state;
+    })()`,
+    wait: 900,
+    fill: surround(['drowner', 'walker', 'drowner']),
+    settle: 650
+  },
+  {
+    name: 'floodswing',
+    desc: '断堤巨斧：交叉斩挥出去的那一帧 + 被砸烂的地面',
+    act: `(function () {
+      var G = HS.Game, guard = 0;
+      G.startRun('flood', 'soldier');
+      while (G.state === 'levelup' && guard++ < 20) {
+        G.pickChoice(0);
+        if (G.confirm) G.confirmSwap(true);
+      }
+      G.state = 'run';
+      G.run.t = 355;
+      G.spawnBoss();
+      var b = G.run.boss, p = G.run.p;
+      p.invuln = 90; p.hp = p.maxHp;
+      if (b) {
+        b.x = p.x - 4; b.y = p.y + 96;
+        b.aSt = 5; b.aT = 0.13;
+        b.aAim = Math.atan2(p.y - b.y, p.x - b.x);
+        HS.Water.breakTerrain(p.x + 62, p.y + 26, 30, G.run);
+        HS.Water.breakTerrain(p.x - 70, p.y - 34, 24, G.run);
+        HS.Water.breakTerrain(p.x + 10, p.y + 62, 20, G.run);
+      }
+      return (b ? b.def.id : 'none') + ' / breaks=' + G.run.breaks.length;
+    })()`,
+    wait: 60,
+    settle: 60
   },
   {
     name: 'meta',

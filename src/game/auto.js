@@ -43,7 +43,7 @@
     var list = Game.run.enemies, best = null, bd = range * range;
     for (var i = 0; i < list.length; i++) {
       var e = list[i];
-      if (e.dead) continue;
+      if (e.dead || e.submerged) continue;
       if (used && used[e.uid]) continue;
       if (skipLevel && !Game.sameLevel(e)) continue;
       var d = U.dist2(e.x, e.y, x, y);
@@ -57,7 +57,7 @@
     var list = Game.run.enemies, best = null, bd = range * range;
     for (var i = 0; i < list.length; i++) {
       var e = list[i];
-      if (e.dead || !(e.mark > 0)) continue;
+      if (e.dead || e.submerged || !(e.mark > 0)) continue;
       if (used && used[e.uid]) continue;
       if (!Game.sameLevel(e)) continue;
       var d = U.dist2(e.x, e.y, x, y);
@@ -67,8 +67,19 @@
   }
 
   /** 自动装备的统一伤害入口：吃 p.dmgMul / 暴击 / 联动 */
+  /** 点到线段的最短距离平方（光剑是长条，命中判定不能只算基点） */
+  function segDist2(px2, py2, x1, y1, x2, y2) {
+    var dx = x2 - x1, dy = y2 - y1;
+    var len2 = dx * dx + dy * dy;
+    var t = len2 > 0 ? ((px2 - x1) * dx + (py2 - y1) * dy) / len2 : 0;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    var qx = x1 + dx * t - px2, qy = y1 + dy * t - py2;
+    return qx * qx + qy * qy;
+  }
+
+  /* 元素类自动装备（火环/冰环/毒雾/火柱）的伤害：dot 与元素本来就不吃护甲 */
   function hurt(e, dmg, tag) {
-    Game.hurtEnemy(e, dmg, { tag: tag || 'auto' });
+    Game.hurtEnemy(e, dmg, { tag: tag || 'auto', dot: 1, ignoreArmor: 1 });
   }
 
   Auto.update = function (run, dt) {
@@ -150,6 +161,58 @@
 
   Auto.orbit = function (run, p, a, def, st, dt) {
     a.ang += (st.spin || 2.4) * dt;
+
+    /* 周期过载（电磁轨道球）
+       这是它的身份，也是它"不弱"的来源：只靠接触判定的话，贴脸的怪在环内、
+       球永远够不着 —— 实测单体 DPS 只有 0.6（光刃 2.5）。
+       所以每 pulse 秒朝最近的几个目标放一道电弧（最多 pulseMax 个）：
+       环内优先，环外没人的话也电一个 90px 内最近的，保证单体也有输出。 */
+    if (st.pulse) {
+      a.pulseT = (a.pulseT || 0) + dt;
+      if (a.pulseT >= st.pulse) {
+        a.pulseT = 0;
+        var pR = st.radius + (st.ball || 0) + 16;
+        var maxT = Math.max(1, st.pulseMax || 4);
+        var cand = [], pi, pe;
+        for (pi = 0; pi < run.enemies.length; pi++) {
+          pe = run.enemies[pi];
+          if (pe.dead || !Game.sameLevel(pe)) continue;
+          var pd2 = U.dist2(pe.x, pe.y, p.x, p.y);
+          if (pd2 <= pR * pR) cand.push({ e: pe, d: pd2 });
+        }
+        /* 圈里没人 → 拉最近的一个远处目标（90px），免得"贴身时反而没伤害" */
+        if (!cand.length) {
+          var best = null, bestD = 90 * 90;
+          for (pi = 0; pi < run.enemies.length; pi++) {
+            pe = run.enemies[pi];
+            if (pe.dead || !Game.sameLevel(pe)) continue;
+            var bd2 = U.dist2(pe.x, pe.y, p.x, p.y);
+            if (bd2 < bestD) { bestD = bd2; best = pe; }
+          }
+          if (best) cand.push({ e: best, d: bestD });
+        }
+        cand.sort(function (x, y) { return x.d - y.d; });
+        var n2 = Math.min(maxT, cand.length);
+        for (pi = 0; pi < n2; pi++) {
+          var te = cand[pi].e;
+          Game.hurtEnemy(te, st.dmg * 0.5,
+            { tag: 'energy', dot: 1, ignoreArmor: 1, electric: 1 });
+          if (run.chains.length < 60) {
+            run.chains.push({
+              pts: [{ x: p.x, y: p.y - 4 }, { x: te.x, y: te.y - 3 }],
+              life: 0.2, max: 0.2, color: '#9ef0ff', w: 1
+            });
+          }
+        }
+        if (n2) {
+          run.fx.push({
+            kind: 'ring', x: p.x, y: p.y, r: st.radius * 0.5, max: pR,
+            life: 0.3, maxLife: 0.3, color: 'rgba(158,240,255,0.55)'
+          });
+          HS.Audio.zap();
+        }
+      }
+    }
     var n = Math.max(1, Math.round(st.count));
     var list = run.enemies;
     var now = run.t;
@@ -197,17 +260,50 @@
         /* 先按"离玩家的距离"粗筛：刀圈只有 radius 那么大，
            满级十片刀时逐片算距离会把开销乘十倍（后期上百只怪） */
         var edx = e.x - p.x, edy = e.y - p.y;
-        var ring = st.radius + e.r + 10;
+        var ring = st.radius + (st.blade || 0) + e.r + 10;
         if (edx * edx + edy * edy > ring * ring) continue;
-        var rr = e.r + 6;
-        if (U.dist2(e.x, e.y, bx, by) > rr * rr) continue;
+        /* ball：电球有体积（+9px 判定），不像光刃那样是条线，也不该是个点 */
+        var rr = e.r + 6 + (st.ball || 0);
+        var d2;
+        if (st.blade) {
+          /* 光剑：以轨道线为中心，往内 40% / 往外 60% 各伸一截。
+             只往外伸的话，贴身怪（半径内）永远打不到 —— 环绕武器的本职就是防贴脸。
+             椭圆轨道（y 压 0.85）方向也要一起压，否则刃尖会偏出去 */
+          var inL = st.blade * 0.4, outL = st.blade * 0.6;
+          var sxb = bx - Math.cos(ang) * inL, syb = by - Math.sin(ang) * inL * 0.85;
+          var tipx = bx + Math.cos(ang) * outL;
+          var tipy = by + Math.sin(ang) * outL * 0.85;
+          d2 = segDist2(e.x, e.y, sxb, syb, tipx, tipy);
+        } else {
+          d2 = U.dist2(e.x, e.y, bx, by);
+        }
+        if (d2 > rr * rr) continue;
         if (!e.acd) e.acd = {};
         if ((e.acd[a.uid] || 0) > now) continue;
         e.acd[a.uid] = now + 0.38;
         hurt(e, st.dmg, def.tags && def.tags.indexOf('ice') >= 0 ? 'ice' : 'auto');
+        /* 命中火花：以前环绕命中只有飘字和音效，看不出"刃真的划过它了" */
+        if (run.fx.length < 200) {
+          run.fx.push({
+            kind: 'p', x: e.x, y: e.y - e.r * 0.5,
+            vx: (e.x - p.x) * 0.9, vy: (e.y - p.y) * 0.9 - 14,
+            life: 0.2, max: 0.2, color: def.color || '#dfe6ee', size: 2
+          });
+        }
         if (st.chains) {
+          /* 电弧：跳向 70px 内最近的目标。带 electric 才会在积水里继续传导，
+             同时画一道电弧 —— 以前只有伤害没有表现，玩家根本不知道它在连锁。 */
           var next = nearestFrom(e.x, e.y, 70, null, true);
-          if (next && next !== e) hurt(next, st.dmg * 0.6, 'energy');
+          if (next && next !== e) {
+            Game.hurtEnemy(next, st.dmg * 0.6,
+              { tag: 'energy', dot: 1, ignoreArmor: 1, electric: 1 });
+            if (run.chains.length < 60) {
+              run.chains.push({
+                pts: [{ x: e.x, y: e.y - 3 }, { x: next.x, y: next.y - 3 }],
+                life: 0.16, max: 0.16, color: '#9ef0ff', w: 1
+              });
+            }
+          }
         }
         if (st.pull) {
           var dx = p.x - e.x, dy = p.y - e.y;
@@ -264,12 +360,12 @@
       hurt(e, (st.dps || 0) * 0.4, def.tags.indexOf('ice') >= 0 ? 'ice' : 'fire');
       if (def.tags.indexOf('ice') >= 0) e.synFrozen = 1;
       if (st.slow) {
-        e.slow = Math.max(e.slow || 0, Math.min(0.8, st.slow));
-        e.slowT = Math.max(e.slowT || 0, 0.8);
+        e.slow = Math.max(e.slow || 0, Math.min(0.8, st.slow + (p.chillAdd || 0)));
+        e.slowT = Math.max(e.slowT || 0, 0.8 * (p.chillTime || 1));
       }
       if (def.tags.indexOf('fire') >= 0) {
         e.burn = Math.max(e.burn || 0, 1.2);
-        e.burnDps = Math.max(e.burnDps || 0, (st.dps || 0) * 0.35);
+        e.burnDps = Math.max(e.burnDps || 0, (st.dps || 0) * 0.35 * (p.burnMul || 1));
       }
       if (p.syn && p.syn.critBurn) e.synBurn = 1;
     }
@@ -342,7 +438,8 @@
         pts: [{ x: t.x, y: t.y - 44 }, { x: t.x, y: t.y }],
         life: 0.14, max: 0.14, color: def.color
       });
-      Game.explode(t.x, t.y, st.radius, st.dmg, def.color);
+      Game.explode(t.x, t.y, st.radius, st.dmg, def.color,
+        def.id === 'stormdevice' ? { electric: 1 } : null);
     }
     if (did) HS.Audio.zap();
   };
@@ -459,7 +556,7 @@
             var along = dx * Math.cos(ang) + dy * Math.sin(ang);
             if (along < 0 || along > st.range) continue;
             if (Math.abs(-dx * Math.sin(ang) + dy * Math.cos(ang)) > 5 + e2.r) continue;
-            hurt(e2, st.dmg, 'energy');
+            Game.hurtEnemy(e2, st.dmg, { tag: 'energy', dot: 1, ignoreArmor: 1, electric: 1 });
           }
         } else if (gid === 'flamenozzle') {
           for (var q2 = 0; q2 < run.enemies.length; q2++) {
@@ -513,14 +610,14 @@
             if (ez.dead || !Game.sameLevel(ez)) continue;
             var dzz = U.dist(ez.x, ez.y, dv.x, dv.y);
             if (dzz > dv.r + ez.r) continue;
-            Game.hurtEnemy(ez, dv.dps * 0.35, { silent: true, tag: dv.effect === 'fire' ? 'fire' : 'auto' });
+            Game.hurtEnemy(ez, dv.dps * 0.35, { silent: true, dot: 1, ignoreArmor: 1, tag: dv.effect === 'fire' ? 'fire' : 'auto' });
             if (dv.slow) {
-              ez.slow = Math.max(ez.slow || 0, Math.min(0.8, dv.slow));
-              ez.slowT = Math.max(ez.slowT || 0, 0.7);
+              ez.slow = Math.max(ez.slow || 0, Math.min(0.8, dv.slow + (p.chillAdd || 0)));
+              ez.slowT = Math.max(ez.slowT || 0, 0.7 * (p.chillTime || 1));
             }
             if (dv.effect === 'fire') {
               ez.burn = Math.max(ez.burn || 0, 1.2);
-              ez.burnDps = Math.max(ez.burnDps || 0, dv.dps * 0.3);
+              ez.burnDps = Math.max(ez.burnDps || 0, dv.dps * 0.3 * (p.burnMul || 1));
             }
             if (dv.effect === 'ice') ez.synFrozen = 1;
             if (dv.pull) {

@@ -42,13 +42,26 @@ check('通关后 mapWins.highway=1', d.mapWins.highway === 1, JSON.stringify(d.m
 check('night 已解锁', d.unlockedMaps.indexOf('night') >= 0, JSON.stringify(d.unlockedMaps));
 check('desert 尚未解锁（要过夜图）', d.unlockedMaps.indexOf('desert') < 0, JSON.stringify(d.unlockedMaps));
 
+/* 依次推到荒漠公路通关，锈水高速必须作为第四张图解锁 */
+Game.state = 'title';
+Game.startRun('night', 'soldier');
+Game.finishRun(true);
+Game.state = 'title';
+Game.startRun('desert', 'soldier');
+Game.finishRun(true);
+d = HS.Save.data;
+check('荒漠通关后 desert 记录完成', d.mapWins.desert === 1, JSON.stringify(d.mapWins));
+check('锈水高速已解锁', d.unlockedMaps.indexOf('flood') >= 0, JSON.stringify(d.unlockedMaps));
+
 /* 模拟重启：重新 load */
 const saved = JSON.parse(JSON.stringify(d));
 HS.Save.data = null;
 HS.Save.load();
 d = HS.Save.data;
 check('重启后 night 解锁仍在', d.unlockedMaps.indexOf('night') >= 0, JSON.stringify(d.unlockedMaps));
-check('重启后通关次数还在', d.mapWins.highway === 1 && d.wins === 1, JSON.stringify(d.mapWins));
+check('重启后锈水高速解锁仍在', d.unlockedMaps.indexOf('flood') >= 0, JSON.stringify(d.unlockedMaps));
+check('重启后通关次数还在', d.mapWins.highway === saved.mapWins.highway && d.wins === saved.wins,
+  JSON.stringify(d.mapWins) + ' / wins=' + d.wins);
 
 /* ---------- 2. 旧格式存档迁移 ---------- */
 console.log('[旧存档迁移]');

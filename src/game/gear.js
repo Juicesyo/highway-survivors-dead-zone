@@ -19,7 +19,7 @@
 
   var ADD_KEYS = {
     count: 1, pierce: 1, chains: 1, targets: 1, width: 1,
-    slow: 1, knock: 1, spread: 1, stun: 1, pull: 1
+    slow: 1, knock: 1, spread: 1, stun: 1, pull: 1, blade: 1
   };
 
   /* 全局成长系数：武器 5 级的强度曲线集中在这里调，
@@ -99,6 +99,7 @@
     if (g.heal) st.heal = b.heal + g.heal * n;
     if (g.slow) st.slow = b.slow + g.slow * n;
     if (g.width) st.width = b.width + g.width * n;
+    if (g.blade && b.blade) st.blade = b.blade + g.blade * n;
     /* 挥砍类近战基础范围统一放大 1.3 倍：屏宽 320 的世界里 24~30px 的刀太憋屈。
        回旋刃是投掷物，不吃基础加成但保留默认成长。
        g 里自己写了 range 的（如冲击波发生器）优先用数据。近战默认成长 3.5%/级。 */
@@ -133,6 +134,14 @@
       if (def.full.spin) st.spin = (st.spin || 1) * def.full.spin;
       if (def.full.radius) st.radius = (st.radius || 1) * def.full.radius;
       if (def.full.dmg) st.dmg = (st.dmg || 0) * def.full.dmg;
+      /* 长刃类（光剑无人环）的终形态要把刃身也拉长 */
+      if (def.full.blade) st.blade = def.full.blade;
+      if (def.full.ball) st.ball = def.full.ball;
+      if (def.full.pulse) st.pulse = def.full.pulse;
+      if (def.full.pulseMax) st.pulseMax = def.full.pulseMax;
+      /* 环绕体的终形态：电弧球多一条连锁、重力球吸得更狠 */
+      if (def.full.chains) st.chains = def.full.chains;
+      if (def.full.pull) st.pull = (st.pull || 0) * def.full.pull;
       st.full = 1;
     }
 
@@ -172,6 +181,8 @@
 
     /* 毒 / 火 / 冰等标签由运行时读 */
     st.fx = def.effect || null;
+    /* 元素：flame 类武器靠它决定挂燃烧还是挂减速（Gear.flame） */
+    st.elem = def.elem || null;
     w._st = st;
     w._ver = p.statVer;
     w._lvl = w.lvl;
@@ -203,6 +214,24 @@
     if (st.radius) st.radius *= p.areaMul;
     if (st.dur) st.dur *= p.durMul;
 
+    /* 环绕型：它没有"射程/弹速/冷却"，只有轨道。通用属性按语义折叠过来，
+       否则玩家点了「攻击范围」「弹丸数量」「攻速」，环一点变化都没有 —— 全是废卡。 */
+    if (def.kind === 'orbit') {
+      /* 攻击范围 → 轨道半径（夜图射程惩罚只吃一半，和近战一致） */
+      st.radius *= 1 + (p.rangeMul - 1) * 0.5;
+      /* 弹丸数量 → 多一个环绕体 */
+      st.count += p.projCount;
+      /* 攻速 → 转速（打对折，避免攻速流把环绕直接堆成绞肉机） */
+      st.spin = (st.spin || 2.4) * (1 + (p.atkMul - 1) * 0.5);
+      /* 分裂 / 弹射 → 命中溅射到旁边的敌人（railorb 本来就有 chains，一起叠） */
+      st.chains = (st.chains || 0) + p.split + p.bounce;
+      /* 穿透 → 长刃类刃身更长；球类改成多连一个目标 */
+      if (st.blade) st.blade += p.pierce * 2;
+      else st.chains += p.pierce;
+      st.targets = (st.targets || 1) + p.pierce + p.projCount;
+      return;
+    }
+
     if (fam === 'gun' || fam === 'thrown') {
       st.count += p.projCount;
       st.pierce += p.pierce;
@@ -227,6 +256,16 @@
       if (p.homing) st.dmg *= 1.08;
     } else {
       st.targets = (st.targets || 1) + p.pierce + p.projCount;
+    }
+
+    /* 喷火类没有"弹道"，穿透折成火舌厚度（扇形角度）：
+       以前 pierce 对喷火是纯死字段，点了火焰扇面一点没变 */
+    if (def.mech === 'flame') {
+      st.arc = (st.arc || 0.5) + p.pierce * 0.05;
+    }
+    /* 治疗类（注射器）：伤害加成折一半给治疗量，否则纯辅助流点「伤害」完全无效 */
+    if (def.mech === 'heal' && st.heal) {
+      st.heal *= 1 + (p.dmgMul - 1) * 0.5;
     }
 
     /* 联动：副武器协同 / 自动装备集群 / 聚能装药 */
@@ -500,6 +539,18 @@
         w.spin = 0;
       }
 
+      /* 持续光束（红莲切割者）：不走上膛/冷却那套，固定 0.08s 一跳。
+         这里**故意不乘 rate** —— 攻速、暴走、过热加速对它全部无效，
+         这是它换取"永远不断火"的代价。 */
+      if (def.sustainBeam) {
+        w.timer -= dt;
+        if (w.timer <= 0) {
+          w.timer = def.base.cd || 0.08;
+          Gear.fire(w, def, st, true);
+        }
+        continue;
+      }
+
       if (def.mech === 'flame' || def.mech === 'drill') {
         /* 持续型：每帧判定，用 cd 累积成 tick */
         w.timer -= dt;
@@ -571,6 +622,9 @@
     var art = MECH_ART[mech] || 'gun';
     w.fireAt = Game.run.t;
 
+    /* 连锁闪电按"开火次数"蓄能：一次齐射/一次挥砍只算一次，持续光束不算 */
+    if (!def.sustainBeam && HS.Game.chargeChain) HS.Game.chargeChain(st, mul, def);
+
     switch (mech) {
       case 'bullet': {
         var t = Game.nearest(p.x, p.y, st.range);
@@ -584,6 +638,7 @@
             r: st.r || 1.9, pierce: st.pierce | 0, color: def.color,
             split: st.split | 0, bounce: st.bounce | 0,
             homing: st.homing | 0, effect: hitFx(def, st),
+            pullStop: def.pullStop, pullK: def.pullK,
             radius: def.base.radius || 0, tag: def.fam
           });
         }
@@ -645,8 +700,18 @@
       case 'beam':
       case 'rail': {
         ang = aimAt(p, st.range);
-        Gear.beam(p, ang, st, def, false, mul);
-        HS.Audio.weapon(def.art);
+        /* 持续光束每秒 12 跳：伤害数字与开火音都得节流，否则糊成一片 */
+        var quiet = false;
+        if (def.sustainBeam) {
+          p._beamN = (p._beamN || 0) + 1;
+          quiet = (p._beamN % 6) !== 0;
+        }
+        Gear.beam(p, ang, st, def, quiet, mul);
+        if (!def.sustainBeam) HS.Audio.weapon(def.art);
+        else if (Game.run.t - (p._beamSfxT || -9) > 0.16) {
+          p._beamSfxT = Game.run.t;
+          HS.Audio.weapon(def.art);
+        }
         break;
       }
       case 'melee': {
@@ -786,7 +851,8 @@
       var d = Math.sqrt(dx * dx + dy * dy) || 1;
       if (d > range + e.r) continue;
       if ((dx * cosA + dy * sinA) / d < cosLim) continue;
-      Game.hurtEnemy(e, st.dmg * mul, { tag: def.fam });
+      Game.hurtEnemy(e, st.dmg * mul, { tag: def.fam,
+        electric: def.id === 'voltsaw' || def.id === 'voltsaw_x' || def.id === 'stunbaton' || def.id === 'stunbaton_x' ? 1 : 0 });
       if (st.stun) e.stun = Math.max(e.stun || 0, st.stun);
       if (st.knock) {
         e.x += dx / d * st.knock;
@@ -869,8 +935,30 @@
   };
 
   /** 光束 / 轨道炮：沿瞄准线打穿一排 */
+  /**
+   * 光束 / 轨道炮：st.count 决定一次射出几道，按小角度扇形排开。
+   *
+   * 以前这里只认真实一道 —— `Gear.global` 早就把「弹丸数量」加进 energy 的
+   * st.count 了，但没人读，等于点了没反应。现在多道光束是真实伤害，
+   * 「多重光栅」分支和「弹丸数量」属性都通过这条路生效。
+   */
   Gear.beam = function (p, ang, st, def, silent, mul, noVis) {
+    var n = Math.max(1, Math.min(4, st.count | 0));
+    /* 多道光束走"平行偏移"而不是扇形：扇形在小角度下会糊成一根更粗的线，
+       玩家看不出多了几道；平行错开 5px 才是"三根并列的激光"的观感。
+       再加一点点扇形，让远端不至于完全重合。 */
+    var nxp = -Math.sin(ang), nyp = Math.cos(ang);
+    var gap = 5 + (st.spread || 0) * 18;
+    for (var bi = 0; bi < n; bi++) {
+      var k = bi - (n - 1) / 2;
+      Gear.beamOnce(p, ang + k * 0.022, st, def, mul, noVis, nxp * k * gap, nyp * k * gap, silent);
+    }
+    if (!silent) Game.run.shake = Math.max(Game.run.shake, 2);
+  };
+
+  Gear.beamOnce = function (p, ang, st, def, mul, noVis, ox, oy, quiet) {
     var run = Game.run;
+    var bx = p.x + (ox || 0), by = p.y + (oy || 0);
     var len = st.range || 200;
     var width = st.width || 6;
     var maxHit = Math.max(1, (st.pierce | 0) + 1);
@@ -881,21 +969,44 @@
     for (var i = 0; i < run.enemies.length && hit < maxHit; i++) {
       var e = run.enemies[i];
       if (e.dead || !Game.sameLevel(e)) continue;
-      var dx = e.x - p.x, dy = e.y - p.y;
+      var dx = e.x - bx, dy = e.y - by;
       var along = dx * cosA + dy * sinA;
       if (along < 0 || along > len) continue;
       var perp = Math.abs(-dx * sinA + dy * cosA);
       if (perp > width + e.r) continue;
-      Game.hurtEnemy(e, (st.dmg || 0) * mul, { tag: def.fam });
+      Game.hurtEnemy(e, (st.dmg || 0) * mul, { tag: def.fam, silent: !!quiet,
+        electric: def.id === 'railgun' || def.id === 'railgun_x' ? 1 : 0 });
       if (st.sp && st.sp.burn) {
         e.burn = Math.max(e.burn || 0, 1.4);
         e.burnDps = Math.max(e.burnDps || 0, (st.dmg || 0) * mul * 0.3);
+      }
+      /* 分裂 / 弹射 → 光束折射：从命中点跳一个电弧到旁边最近的敌人。
+         光束没有弹丸可以分裂，这是这两个属性对它的落点（0.3s 每敌限一次） */
+      if (st.chains && run.t - (e._beamChainT || -9) > 0.3) {
+        var ce = null, cdd = 4900;
+        for (var ci = 0; ci < run.enemies.length; ci++) {
+          var cx = run.enemies[ci];
+          if (cx === e || cx.dead || !Game.sameLevel(cx)) continue;
+          var cdx = cx.x - e.x, cdy = cx.y - e.y;
+          var c2 = cdx * cdx + cdy * cdy;
+          if (c2 < cdd) { cdd = c2; ce = cx; }
+        }
+        if (ce) {
+          e._beamChainT = run.t;
+          Game.hurtEnemy(ce, (st.dmg || 0) * mul * 0.6, { tag: 'energy', silent: !!quiet });
+          if (!noVis) {
+            run.chains.push({
+              pts: [{ x: e.x, y: e.y - 2 }, { x: ce.x, y: ce.y - 2 }],
+              life: 0.09, max: 0.09, color: def.color, straight: 0
+            });
+          }
+        }
       }
       hit++;
     }
     if (!noVis) {
       run.chains.push({
-        pts: [{ x: p.x, y: p.y - 2 }, { x: p.x + cosA * len, y: p.y + sinA * len }],
+        pts: [{ x: bx, y: by - 2 }, { x: bx + cosA * len, y: by + sinA * len }],
         life: 0.12, max: 0.12, color: def.color, straight: 1,
         /* 把判定宽度交给渲染 —— 以前这里不带 w，render 恒定画 3px，
            「加宽光栅 / 聚焦线圈 / 裂解光束」在画面上一点变化都没有，
@@ -903,7 +1014,6 @@
         w: width
       });
     }
-    if (!silent) run.shake = Math.max(run.shake, 2);
   };
 
   /**
@@ -919,12 +1029,36 @@
     var run = Game.run;
     var arc = st.arc || 0.5, range = st.range || 90;
     var cosLim = Math.cos(arc);
-    var cosA = Math.cos(ang), sinA = Math.sin(ang);
+    /* 弹丸数量 → 多一道火舌：扇形并排铺开。
+       以前 count 对喷火是死字段（Gear.global 照加、Gear.flame 不读），
+       点了「弹丸数量」火焰一点变化都没有。 */
+    var tongues = Math.max(1, Math.min(3, st.count | 0));
+    var tongueStep = 0.2;
+    /* 多道火舌按"分火"算：总量只小幅上升（1→1.5→1.8 倍），大头给覆盖面积，
+       否则「弹丸数量」对喷火会变成 3 倍 DPS 的纯数值怪 */
+    var tongueMul = 1 / (1 + (tongues - 1) * 0.35);
     var burnT = st.dur || 1.4;      // 「缓燃配方」分支加的就是这个
+    /* 元素分支：fire 走燃烧 dot，ice 走减速 + 冻结标记（synFrozen 有现成消费方：
+       critBurn 暴击加成、ringIce 区域加伤）。没有 elem 的老武器默认 fire，行为不变。 */
+    var ice = st.elem === 'ice';
+    /* 低温专精：减速幅度直接加，冻结时长按倍率乘 */
+    var slowTo = Math.min(0.85, (st.slow || 0.45) + (p.chillAdd || 0));
+    var slowFor = burnT * (p.chillTime || 1);
     mul = mul || 1;
+
+    /* 给渲染层留一份锥形参数：火舌/霜雾除了粒子还要画一层明显的光锥 */
+    p.flameArc = arc + (tongues - 1) * tongueStep * 0.5;
+    p.flameRange = range;
+    p.flameElem = ice ? 'ice' : 'fire';
+    /* 光锥余辉盖住整条开火间隔，停火后再淡出 */
+    p.coneT = Math.max(p.coneT || 0, Math.min(0.34, (st.cd || 0.16) + 0.10));
 
     p.fireT = 0.07;
     if (p.recoil < 0.3) p.recoil = 0.3;
+
+    for (var tongue = 0; tongue < tongues; tongue++) {
+    var tAng = tongues > 1 ? ang + (tongue - (tongues - 1) / 2) * tongueStep : ang;
+    var cosA = Math.cos(tAng), sinA = Math.sin(tAng);
 
     for (var i = 0; i < run.enemies.length; i++) {
       var e = run.enemies[i];
@@ -935,31 +1069,95 @@
       if ((dx * cosA + dy * sinA) / d < cosLim) continue;
       /* 不是每一次都报数字，但也不能完全不报 */
       var showNum = ((p._flameHit = (p._flameHit || 0) + 1) % 4) === 0;
-      Game.hurtEnemy(e, st.dmg * mul, { silent: !showNum, tag: 'fire' });
-      e.burn = Math.max(e.burn || 0, burnT);
-      e.burnDps = Math.max(e.burnDps || 0, st.dmg * mul * 0.5);
+      var dmg = st.dmg * mul * tongueMul;
+      /* 冷冻射流的身份：先手弱、后手强 —— 已经冻住的目标吃 1.6 倍 */
+      if (ice && (e.slow || 0) > 0.25) dmg *= 1.6;
+      /* ignoreArmor：火焰与冰霜天生无视护甲，破甲对它们没用 */
+      Game.hurtEnemy(e, dmg, { silent: !showNum, tag: ice ? 'ice' : 'fire', ignoreArmor: 1 });
+      if (ice) {
+        e.slow = Math.max(e.slow || 0, slowTo);
+        e.slowT = Math.max(e.slowT || 0, slowFor);
+        e.synFrozen = 1;
+        /* 霜火反应：冰系打到正在燃烧的目标 → 蒸汽爆一次并把火扑掉。
+           每个目标烧起来只会被引爆一次（清 burn 就是天然限流），
+           再加一道 0.12s 全局节流，防止二十只一起炸糊屏 */
+        if (p.steamLv > 0 && e.burn > 0 && run.t - (p._steamT || -9) > 0.12) {
+          p._steamT = run.t;
+          Game.explode(e.x, e.y, 26, Math.max(10, (e.burnDps || 0) * 6 * (0.5 + 0.5 * p.steamLv)),
+            '#cfeaff', { quiet: true });
+          e.burn = 0;
+          e.burnDps = 0;
+          HS.Audio.steam();
+        }
+      } else {
+        e.burn = Math.max(e.burn || 0, burnT);
+        /* 燃烧专精只乘 dot，不乘这一下的直伤 */
+        e.burnDps = Math.max(e.burnDps || 0, dmg * 0.5 * (p.burnMul || 1));
+        /* 龙息喷枪烧死的目标会炸开并点燃周围，见 combat.js killEnemy */
+        if (def.napalm) e.napalm = 1;
+      }
+      /* 分裂 / 弹射 → 火舌溅射：把火星甩到旁边一个敌人身上。
+         喷火没有弹道可分裂，这是这两个属性对它唯一说得通的落点。
+         每个目标 0.45s 只能被溅一次，否则每 tick 连锁会把开销和伤害一起炸开 */
+      if (st.chains && run.t - (e._flameSpreadT || -9) > 0.45) {
+        var sp = null, sd = 4900;   // 70px 内最近的一个别的目标
+        for (var si = 0; si < run.enemies.length; si++) {
+          var se = run.enemies[si];
+          if (se === e || se.dead || !Game.sameLevel(se)) continue;
+          var sdx = se.x - e.x, sdy = se.y - e.y;
+          var sdd = sdx * sdx + sdy * sdy;
+          if (sdd < sd) { sd = sdd; sp = se; }
+        }
+        if (sp) {
+          e._flameSpreadT = run.t;
+          Game.hurtEnemy(sp, dmg * 0.5, { silent: true, tag: ice ? 'ice' : 'fire', ignoreArmor: 1 });
+          if (ice) {
+            sp.slow = Math.max(sp.slow || 0, slowTo);
+            sp.slowT = Math.max(sp.slowT || 0, slowFor);
+            sp.synFrozen = 1;
+          } else {
+            sp.burn = Math.max(sp.burn || 0, burnT);
+            sp.burnDps = Math.max(sp.burnDps || 0, dmg * 0.5 * (p.burnMul || 1));
+          }
+        }
+      }
+    }
     }
 
-    /* 火舌：每 tick 撒 3 颗，方向和落点都带一点抖动 */
+    /* 火舌 / 霜雾：每 tick 撒几颗，方向和落点都带一点抖动。
+       霜雾比火舌多撒一颗、颗粒更大更白 —— 蓝色在夜色街道上本来就压不住，
+       靠"亮 + 大"才看得出是一条锥形。 */
     if (run.fx.length < 220) {
-      for (var q = 0; q < 3; q++) {
-        var dd = U.rand(4, range * 0.92);
+      var cnt = ice ? 9 : 6;
+      for (var q = 0; q < cnt; q++) {
+        var dd = U.rand(3, range * (ice ? 0.96 : 0.92));
         var aa = ang + U.rand(-arc, arc) * 0.9;
-        run.fx.push({
-          kind: 'p',
-          x: p.x + Math.cos(aa) * dd, y: p.y - 3 + Math.sin(aa) * dd,
-          vx: cosA * U.rand(16, 54) + U.rand(-12, 12),
-          vy: sinA * U.rand(16, 54) + U.rand(-14, 2) - 6,
-          life: U.rand(0.2, 0.4), max: 0.4,
-          color: Math.random() < 0.42 ? '#ffd166' : (Math.random() < 0.62 ? '#ff8b3d' : '#ff4d2a'),
-          size: Math.random() < 0.55 ? 1.5 : 2.5
-        });
+        var px = p.x + Math.cos(aa) * dd, py = p.y - 3 + Math.sin(aa) * dd;
+        if (ice) {
+          run.fx.push({
+            kind: 'p', x: px, y: py,
+            vx: cosA * U.rand(6, 30) + U.rand(-8, 8),
+            vy: sinA * U.rand(6, 30) + U.rand(-8, 6) + 8,
+            life: U.rand(0.4, 0.75), max: 0.75,
+            color: Math.random() < 0.4 ? '#f2fbff' : (Math.random() < 0.62 ? '#a8dcf2' : '#6cc3e8'),
+            size: Math.random() < 0.45 ? 2 : 3.2
+          });
+        } else {
+          run.fx.push({
+            kind: 'p', x: px, y: py,
+            vx: cosA * U.rand(16, 54) + U.rand(-12, 12),
+            vy: sinA * U.rand(16, 54) + U.rand(-14, 2) - 6,
+            life: U.rand(0.2, 0.4), max: 0.4,
+            color: Math.random() < 0.42 ? '#ffd166' : (Math.random() < 0.62 ? '#ff8b3d' : '#ff4d2a'),
+            size: Math.random() < 0.5 ? 2 : 3.2
+          });
+        }
       }
     }
 
     if (run.t - (p._flameSfx || -1) > 0.14) {
       p._flameSfx = run.t;
-      HS.Audio.flame();
+      if (ice) HS.Audio.frost(); else HS.Audio.flame();
     }
   };
 
@@ -982,10 +1180,61 @@
       HS.Audio.ui();
       return;
     }
+    /* 管式发射器（榴弹发射器 / 迫击炮）：从枪口打出去，不是抬手扔出去。
+       以前它们也走 handThrow，角色会做出一整套"投掷"动作 —— 拿着一根发射管
+       却像在甩手雷，动作和武器完全对不上。 */
+    if (def.tube) {
+      var ang0 = t ? Math.atan2(t.y - p.y, t.x - p.x)
+        : (p.facing > 0 ? 0 : Math.PI);
+      p.aimA = ang0;
+      p.recoil = 1;
+      p.fireT = 0.07;                       // 枪口焰（drawGun 按 fireT 画）
+      var mx = p.x + Math.cos(ang0) * 11;
+      var my = p.y - 4 + Math.sin(ang0) * 11;
+      for (var tk = 0; tk < n; tk++) {
+        var tx0, ty0;
+        if (t) {
+          tx0 = t.x + U.rand(-8, 8);
+          ty0 = t.y + U.rand(-8, 8);
+        } else {
+          var td = st.range * (0.68 + 0.28 * Math.random());
+          var ta = ang0 + U.rand(-0.1, 0.1);
+          tx0 = p.x + Math.cos(ta) * td;
+          ty0 = p.y + Math.sin(ta) * td;
+        }
+        Game.lob(mx, my, tx0, ty0, {
+          dmg: dmg, radius: st.radius,
+          explode: true, color: def.color,
+          effect: ex, slow: st.slow, stun: st.stun, dur: st.dur,
+          shard: st.shard | 0, effectDur: st.effectDur || 0,
+          id: def.id
+        });
+      }
+      /* 炮口烟：管式武器靠"后顿 + 喷烟"读，而不是抬手 */
+      if (Game.run.fx.length < 240) {
+        Game.run.fx.push({
+          kind: 'p', x: mx, y: my,
+          vx: Math.cos(ang0) * 52, vy: Math.sin(ang0) * 52,
+          life: 0.12, max: 0.12, color: '#ffd9a0', size: 2.4
+        });
+      }
+      HS.Audio.weapon('launcher');
+      return;
+    }
+
+    /* 烟雾是自保道具：落在自己身前，别丢到敌人堆里 ——
+       它的用法是"站进烟里"，远程才打不中你（见 combat.js 的 inSmoke） */
+    var selfDrop = ex === 'smoke';
     /* 注意：st.radius 已经在 Gear.global 里乘过 areaMul，这里不能再乘一次 */
     for (var k = 0; k < n; k++) {
-      var tx = t ? t.x + U.rand(-10, 10) : p.x + (p.facing > 0 ? 1 : -1) * 100 + U.rand(-12, 12);
-      var ty = t ? t.y + U.rand(-10, 10) : p.y + U.rand(-16, 16);
+      var tx, ty;
+      if (selfDrop) {
+        tx = p.x + (p.facing > 0 ? 1 : -1) * 16 + U.rand(-3, 3);
+        ty = p.y + U.rand(-4, 4);
+      } else {
+        tx = t ? t.x + U.rand(-10, 10) : p.x + (p.facing > 0 ? 1 : -1) * 100 + U.rand(-12, 12);
+        ty = t ? t.y + U.rand(-10, 10) : p.y + U.rand(-16, 16);
+      }
       if (def.id === 'molotov') {
         Game.handThrow(p, tx, ty, {
           dmg: dmg, radius: st.radius, dps: st.dps, dur: st.dur,
@@ -997,7 +1246,9 @@
         dmg: dmg, radius: st.radius,
         explode: true, color: def.color, delay: k * 0.07,
         effect: ex, slow: st.slow, stun: st.stun, dur: st.dur,
-        shard: st.shard | 0, effectDur: st.effectDur || 0
+        shard: st.shard | 0, effectDur: st.effectDur || 0,
+        /* 带上 id：落地特效要按投掷物的种类区分（冰环 / 爆闪 / 电弧） */
+        id: def.id
       });
     }
     HS.Audio.weapon('launcher');

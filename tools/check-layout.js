@@ -61,7 +61,10 @@ for (const [w, h] of SCREENS) {
   const panelRight = w * 0.12 + w * 0.76 - fs2(16);
   const panelTop = h * 0.665;
   const panelBottom = panelTop + fs2(56);
-  const cardsBottom = h * 0.16 + 3 * (fs2(96) + fs2(12)) - fs2(12);
+  const n = HS.Data.mapOrder.length;
+  const mapTop = h * 0.145, mapGap = fs2(8);
+  const cardH = Math.min(fs2(76), (h * 0.61 - mapTop - mapGap * (n - 1)) / n);
+  const cardsBottom = mapTop + n * (cardH + mapGap) - mapGap;
   const launchTop = h * 0.775;
 
   ck(w + 'x' + h + ' 说明行不压开关', !!desc && desc.x + desc.w <= swLeft - 4,
