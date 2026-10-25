@@ -55,7 +55,7 @@ for (const [w, h] of SCREENS) {
   snap();
   HS.UI.mapSelect(G);
 
-  const desc = drawn.find(d => /不设终点/.test(d.t));
+  const desc = drawn.find(d => /四张图的尸群/.test(d.t));
   const label = drawn.find(d => d.t === '无尽模式');
   const swLeft = w * 0.88 - fs2(16) - fs2(38);
   const panelRight = w * 0.12 + w * 0.76 - fs2(16);

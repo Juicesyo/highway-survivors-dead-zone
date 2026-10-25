@@ -815,7 +815,7 @@
     var ey = H * 0.665, eh = fs(56);
     panel(ctx, W * 0.12, ey, W * 0.76, eh, 12, 'rgba(255,255,255,0.04)', C.line);
     text(ctx, '无尽模式', W * 0.12 + fs(16), ey + fs(18), 12.5, C.text, 'left', true);
-    text(ctx, '不设终点，Boss 一轮比一轮强 · 无通关奖励', W * 0.12 + fs(16), ey + fs(38), 9.5, C.dim, 'left', false);
+    text(ctx, '四张图的尸群按顺序登场 · Boss 越来越强', W * 0.12 + fs(16), ey + fs(38), 9.5, C.dim, 'left', false);
     var swW = fs(38), swH = fs(20), swX = W * 0.88 - fs(16) - swW, swY = ey + fs(18) - swH / 2;
     rr(ctx, swX, swY, swW, swH, swH / 2);
     ctx.fillStyle = g.endless ? 'rgba(255,90,60,0.85)' : 'rgba(255,255,255,0.12)';

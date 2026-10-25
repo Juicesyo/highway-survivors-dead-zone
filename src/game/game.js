@@ -16,19 +16,29 @@
   var MAX_PASSIVES = 9;    // 通用属性最多 9 条，避免全都要
   var MAX_AUTOS = 9;       // 自动装备件数上限（另有按类型细分的上限）
 
-  /* 无尽模式刷怪表：[类型, 首次出场秒数, 基础权重]
-     三张图的专属怪（扑袭者 / 呕酸尸 / 持枪匪徒）在无尽里全都会来，
-     只是各自有解锁时间，避免开局就一锅乱炖 */
+  /* 无尽模式刷怪表：[类型, 首次出场秒数, 基础权重, 地图序号]
+     四张图的杂兵全都会来，但按地图顺序一层层放：
+       末世街区(0) → 死区之夜(1) → 荒漠公路(2) → 锈水高速(3)
+     同一张图里靠前的怪先出、重量级后出；前一张图没出齐之前，
+     下一张图的怪不会提前混进来 —— 否则开局就被枪手点、水鬼贴脸，节奏是乱的 */
   var ENDLESS_TYPES = [
-    ['walker', 0, 1.15],
-    ['runner', 0, 0.60],
-    ['crawler', 18, 0.42],
-    ['spitter', 50, 0.30],
-    ['terrorist', 80, 0.26],
-    ['pouncer', 100, 0.30],
-    ['vomiter', 130, 0.28],
-    ['drowner', 105, 0.34],
-    ['brute', 170, 0.38]
+    ['walker', 0, 1.15, 0],
+    ['runner', 0, 0.60, 0],
+    ['crawler', 18, 0.42, 0],
+    ['spitter', 50, 0.30, 0],
+    ['brute', 110, 0.38, 0],
+    ['pouncer', 120, 0.30, 1],
+    ['vomiter', 155, 0.28, 1],
+    ['terrorist', 195, 0.26, 2],
+    ['drowner', 235, 0.34, 3]
+  ];
+
+  /* 换场提示：时间必须与上面每张图第一只怪的解锁秒一致 */
+  var ENDLESS_STAGES = [
+    [0, '末世街区'],
+    [120, '死区之夜'],
+    [195, '荒漠公路'],
+    [235, '锈水高速']
   ];
 
   var Game = {
@@ -160,7 +170,7 @@
         pending: 0, choices: [], choiceT: 0,
         spawnAcc: 0, eliteT: 0, eventT: 46,
         boss: null, bossSpawned: false, bossKilled: false,
-        nextBossAt: RUN_TIME, bossCount: 0, endless: !!this.endless,
+        nextBossAt: RUN_TIME, bossCount: 0, endless: !!this.endless, endlessStage: 1,
         search: null, lootTarget: null, lootedCount: 0,
         insideBld: null, enteredHint: false, roofHint: false, roofClimbHint: false,
         stairTarget: null, roofHatch: null, jumpDir: null,
@@ -648,6 +658,14 @@
 
     updateDirector: function (dt) {
       var run = this.run;
+
+      /* 无尽模式：四张图按顺序换场，换的时候喊一句，让玩家知道"又来新东西了" */
+      if (run.endless && ENDLESS_STAGES[run.endlessStage] &&
+          run.t >= ENDLESS_STAGES[run.endlessStage][0]) {
+        this.bannerShow(ENDLESS_STAGES[run.endlessStage][1] + ' 的尸群也压上来了', 2.8);
+        run.endlessStage++;
+      }
+
       var frenzy = run.frenzyT > 0 ? 1.9 : 1;
       var rate = (1.0 + run.t / 60 * 0.46) * run.map.spawnMul * frenzy;
       // Boss 登场后杂兵只留少量，让 Boss 战读得清
@@ -718,28 +736,29 @@
     },
 
     /**
-     * 无尽模式的刷怪表：三张图的专属怪全部参与抽取。
-     * 每行 = [类型, 首次出场秒数, 基础权重]。
-     * 解锁后有 3 分钟爬坡（40% → 100%），特殊怪的权重再随存活时间缓慢上抬，
-     * 所以前期是普通尸群，8 分钟后开始"什么都来一点"。
+     * 无尽模式的刷怪表：四张图的杂兵按地图顺序依次加入。
+     * 每行 = [类型, 首次出场秒数, 基础权重, 地图序号]。
+     * 新解锁的怪有 3 分钟爬坡（40% → 100%），外图的怪再多给一点存在感，
+     * 否则刚出场就被本图尸群淹掉，玩家根本注意不到"来新东西了"。
      */
     pickTypeEndless: function (t) {
       var pool = ENDLESS_TYPES;
-      var total = 0, i, w, row;
+      var total = 0, i, w, row, since;
       for (i = 0; i < pool.length; i++) {
         row = pool[i];
-        row[3] = 0;
+        row[4] = 0;
         if (t < row[1]) continue;
-        w = row[2] * Math.min(1, 0.4 + (t - row[1]) / 180 * 0.6);
-        if (i >= 3) w *= Math.min(1.6, 1 + (t - row[1]) / 600);
-        row[3] = w;
+        since = t - row[1];
+        w = row[2] * Math.min(1, 0.4 + since / 180 * 0.6);
+        if (row[3] > 0) w *= Math.min(1.6, 1 + since / 600);
+        row[4] = w;
         total += w;
       }
       if (total <= 0) return 'walker';
       var r = Math.random() * total;
       for (i = 0; i < pool.length; i++) {
-        if (!pool[i][3]) continue;
-        r -= pool[i][3];
+        if (!pool[i][4]) continue;
+        r -= pool[i][4];
         if (r <= 0) return pool[i][0];
       }
       return 'walker';

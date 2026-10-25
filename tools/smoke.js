@@ -2555,6 +2555,54 @@ check('下一只 Boss 已排期', Game.run.nextBossAt > Game.run.t, Game.run.nex
 check('掉落补给', Game.run.drops.length > 0, Game.run.drops.length);
 Game.endless = false;
 
+/* ================= 10.1 无尽刷怪：四张图按地图顺序登场 ================= */
+section('无尽刷怪顺序');
+{
+  const sample = (t, n) => {
+    const out = {};
+    for (let i = 0; i < n; i++) {
+      const id = Game.pickTypeEndless(t);
+      out[id] = (out[id] || 0) + 1;
+    }
+    return out;
+  };
+  const keys = o => Object.keys(o).sort().join(',');
+
+  const s0 = sample(40, 500);
+  check('开局只有末世街区的杂兵',
+    !s0.pouncer && !s0.vomiter && !s0.terrorist && !s0.drowner, keys(s0));
+
+  const s1 = sample(130, 600);
+  check('死区之夜的扑袭者第二个加入',
+    !!s1.pouncer && !s1.terrorist && !s1.drowner, keys(s1));
+
+  const s2 = sample(205, 800);
+  check('荒漠公路的枪手随后加入', !!s2.terrorist && !s2.drowner, keys(s2));
+
+  const s3 = sample(300, 1200);
+  check('锈水高速的水鬼最后加入', !!s3.drowner, keys(s3));
+
+  const ALL_TYPES = ['walker', 'runner', 'crawler', 'spitter', 'brute',
+    'pouncer', 'vomiter', 'terrorist', 'drowner'];
+  const sAll = sample(600, 4000);
+  const miss = ALL_TYPES.filter(id => !sAll[id]);
+  check('四张图的敌人最终都会出场', miss.length === 0,
+    miss.length ? ('缺 ' + miss.join(',')) : ALL_TYPES.length + ' 种');
+
+  /* 换场提示：时间点必须和刷怪表一致 */
+  Game.state = 'title';
+  Game.endless = true;
+  Game.startRun('highway', 'soldier');
+  Game.run.t = 121;
+  Game.updateDirector(0.016);
+  check('换场有提示', /死区之夜/.test(Game.banner || ''), Game.banner);
+  Game.run.t = 236;
+  Game.updateDirector(0.016);    // 荒漠公路
+  Game.updateDirector(0.016);    // 锈水高速（一次只推进一场）
+  check('最后一张图也会提示', /锈水高速/.test(Game.banner || ''), Game.banner);
+  Game.endless = false;
+}
+
 /* ================= 10.5 结算金币 ================= */
 section('结算金币');
 {
