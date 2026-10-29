@@ -76,7 +76,7 @@ console.log('[4. special / flag / effect 消费方]');
 {
   /* 消费方按"token 在游戏源码里出现"判定（st.shard / e.burn / flags.volley2 等形式都算） */
   const TOKEN = ['sustain', 'homing', 'shard', 'mark', 'beam', 'burn', 'shock', 'volley2',
-    'echo', 'spinup', 'bounce3', 'split', 'explode', 'pull'];
+    'echo', 'spinup', 'bounce3', 'split', 'explode', 'pull', 'bleed', 'leech'];
   /* effect 已知分派集合：zone 按通用 dps+slow 结算，lure/fire/ice/gravity 有专属逻辑，
      zap 走 strike 分派；emp/smoke/artillery/mines/mark 是投掷/弹丸落点效果
      （Gear.throwAt → landLob / bulletEffect 分派，已逐条核对消费链） */

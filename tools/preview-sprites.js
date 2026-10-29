@@ -40,11 +40,11 @@ for (const name of Object.keys(data.defs)) {
 }
 if (bad) { console.log('\n点阵有 ' + bad + ' 处问题，先修好再生成图集。'); process.exit(1); }
 
-/* 要预览的帧：玩家四角色 + 全部敌人 */
+/* 要预览的帧：全部敌人。
+   主角鲸鱼娘是位图帧（原图直接进图集），看效果用下面两条命令：
+     node tools/gen-whale.js                     → assets/whale.png（两帧）
+     node tools/shots.js                         → 局内截图 */
 const cells = [];
-for (const id of ['soldier', 'medic', 'mechanic', 'ghost']) {
-  cells.push({ label: 'player_' + id, def: data.defs.player, pal: data.playerPals[id] });
-}
 for (const name of data.enemyOrder) {
   cells.push({ label: name, def: data.defs[name] });
 }

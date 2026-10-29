@@ -112,15 +112,19 @@
     return v;
   };
 
-  /** 荒漠公路：只有一条纵向的车道，车一律停在路面上 */
+  /** 直路地图：只有一条纵向车道，车一律停在路面上（隧道同理，走廊更窄） */
   function onDesert() {
-    return !!(V._run && V._run.map && (V._run.map.theme === 'desert' || V._run.map.theme === 'flood'));
+    return !!(V._run && V._run.map &&
+      (V._run.map.theme === 'desert' || V._run.map.theme === 'flood' || V._run.map.theme === 'tunnel'));
   }
 
   /** 车道中心：把随机点吸附到最近的车道带里，避免车停在街区空地上 */
   function snapToRoad(x, y, vertical) {
     if (onDesert()) {
-      var lane0 = (U.hash(x, y, 4833) - 0.5) * ROAD * 0.6;
+      var tunnel = !!(V._run && V._run.map && V._run.map.theme === 'tunnel');
+      /* 隧道走廊只有 176 宽，车再偏就贴墙了 —— 收窄到 ±34 */
+      var spread = tunnel ? 34 : ROAD * 0.6;
+      var lane0 = (U.hash(x, y, 4833) - 0.5) * spread;
       return { x: lane0, y: y };
     }
     if (vertical) {

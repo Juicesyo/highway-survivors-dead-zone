@@ -16,7 +16,14 @@ const Game = HS.Game;
 const runs = parseInt(process.argv[2] || '3', 10);
 const fast = process.argv.indexOf('--fast') >= 0;
 
-const maps = ['highway', 'night', 'desert', 'flood'];
+/* 第二参数可以指定单张图（默认五张轮着来）：node tools/balance.js 4 tunnel */
+const MAPS = ['highway', 'night', 'desert', 'flood', 'tunnel'];
+const onlyMap = process.argv[3];
+if (onlyMap && MAPS.indexOf(onlyMap) < 0) {
+  console.error('未知地图: ' + onlyMap + '（可选 ' + MAPS.join(' / ') + '）');
+  process.exit(1);
+}
+const maps = onlyMap ? [onlyMap] : MAPS;
 const stats = [];
 let droppedXp = 0, pickedXp = 0;
 const _kill = Game.killEnemy;
@@ -27,8 +34,8 @@ Game.gainXp = function (n) { pickedXp += n; return _gain.call(this, n); };
 for (let r = 0; r < runs; r++) {
   HS.Save.data.gold = 9999;
   HS.Save.data.perm.hp = 2;
-  Game.selChar = 'soldier';
-  Game.startRun(maps[r % maps.length], 'soldier');
+  Game.selChar = 'whale';
+  Game.startRun(maps[r % maps.length], 'whale');
 
   let ang = 0;
   let lastChoice = [];

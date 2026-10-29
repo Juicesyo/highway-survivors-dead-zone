@@ -21,7 +21,10 @@
     bullet: [
       { id: 'power', name: '弹头强化', desc: '这把枪伤害 +14%', maxLvl: 3, mod: { dmg: 0.14 } },
       { id: 'pierce', name: '穿甲弹芯', desc: '穿透 +1，伤害 +5%', maxLvl: 3, mod: { pierce: 1, dmg: 0.05 } },
-      { id: 'volley', name: '双发扳机', desc: '每次多打出一发（散布略增）', maxLvl: 2, mod: { count: 1, spread: 0.04 }, special: 'volley' }
+      /* 不需要 special：count+1 和 spread 已经把这张卡说清了。
+         以前挂着 special: 'volley'，但代码里没有任何地方读 st.sp.volley ——
+         死字段（smoke 的 SPECIAL 白名单还把它放行了，等于假通过）。 */
+      { id: 'volley', name: '双发扳机', desc: '每次多打出一发（散布略增）', maxLvl: 2, mod: { count: 1, spread: 0.04 } }
     ],
     burst: [
       { id: 'power', name: '加量装药', desc: '每发伤害 +14%', maxLvl: 3, mod: { dmg: 0.14 } },
@@ -184,10 +187,25 @@
       { id: 'power', name: '重刃', desc: '接触伤害 +22%', maxLvl: 3, mod: { dmg: 0.22 } },
       { id: 'radius', name: '外扩轨道', desc: '环绕半径 +12%，转速 +8%', maxLvl: 2, mod: { radius: 0.12, spin: 0.08 } }
     ],
-    mortar: [
-      { id: 'blast', name: '扩爆装药', desc: '爆炸半径 +16%', maxLvl: 3, mod: { radius: 0.16 } },
-      { id: 'power', name: '串联战斗部', desc: '伤害 +16%', maxLvl: 3, mod: { dmg: 0.16 } },
-      { id: 'shard', name: '破片弹', desc: '爆炸后甩出致命碎片', maxLvl: 2, mod: { dmg: 0.05 }, special: 'shard' }
+    /* 红莲切割者 / 熔核过载：**永远只有一道光束**（Gear.beam 里对 sustainBeam 做了钳制），
+       所以模板里的「多重光栅」在它身上是废卡 —— 换成「长程聚焦」：
+       射程 +10%、穿透 +1，让那一道光打得更远、穿得更透。
+       宽度直接给 +3（持续光束的瓶颈是宽度，不是穿透，见下面 sustainBeam 的折算式）。 */
+    redlaser: [
+      { id: 'power', name: '功率超载', desc: '光束伤害 +18%', maxLvl: 3, mod: { dmg: 0.18 } },
+      { id: 'wide', name: '加宽光栅', desc: '光束大幅加宽（持续光束的瓶颈是宽度，不是穿透）', maxLvl: 3, mod: { width: 3 } },
+      { id: 'reach', name: '长程聚焦', desc: '光束射程 +10%，穿透 +1', maxLvl: 2, mod: { range: 0.1, pierce: 1 } },
+      { id: 'burnBeam', name: '灼烧光谱', desc: '被光束扫到的敌人开始燃烧', maxLvl: 2, mod: { dmg: 0.05 }, special: 'burn' }
+    ],
+    /* 光剑无人环：刃身是**线段**不是点。环绕模板的「外扩轨道」只会把整条刃
+       推离身体 —— 半径 +14% 连贴脸那一圈空心区一起放大，反而更打不到近身的怪。
+       这里点名换成「加长刃身」：外沿照样往外长，内沿朝身体方向长，
+       贴身照样切得到（判定是线段，见 Auto.orbit 的 segDist2）。 */
+    saberring: [
+      { id: 'speed', name: '高速自旋', desc: '环绕转速 +26%', maxLvl: 3, mod: { spin: 0.26 } },
+      { id: 'blade', name: '加长刃身', desc: '刃身 +8，外沿更远、贴身照样切', maxLvl: 2, mod: { blade: 8 } },
+      { id: 'power', name: '重刃', desc: '接触伤害 +22%', maxLvl: 3, mod: { dmg: 0.22 } },
+      { id: 'extra', name: '增设环体', desc: '环绕体 +1，扫过的缝隙更小', maxLvl: 2, mod: { count: 1 } }
     ],
     railgun: [
       { id: 'power', name: '电容阵列', desc: '伤害 +20%', maxLvl: 3, mod: { dmg: 0.2 } },
@@ -237,6 +255,16 @@
   D.gearUps = {};
   (function buildUps() {
     var id, def, list, i, o, map;
+    /* 出血（锯齿刃口）：只有数据里标了 edge:1 的**带刃冷兵器**才有这条分支。
+       光剑 / 巨型光剑打的是能量刃、能量鞭没有刃、盾牌与冲击波发生器打的是冲击，
+       它们砍不出伤口 —— 这类武器在 weapons.js 里不写 edge 就不会拿到这张卡。
+       层数上限跟着分支等级走（Lv1/2/3 = 3/4/5 层），见 combat.js 的 Game.bleed。 */
+    var BLEED_UP = {
+      id: 'bleed', name: '锯齿刃口',
+      desc: '命中造成流血，连续命中层层加深（无视护甲）',
+      maxLvl: 3, mod: { dmg: 0.06 }, special: 'bleed',
+      icon: 'blood', color: '#7d838c'
+    };
     for (id in D.gear) {
       if (!D.gear.hasOwnProperty(id)) continue;
       def = D.gear[id];
@@ -261,6 +289,33 @@
           id: o.id, name: o.name, desc: o.desc,
           maxLvl: o.maxLvl || 3, mod: o.mod || {},
           special: o.special || null
+        };
+      }
+      /* 带刃冷兵器多一条「锯齿刃口」；进化形态继承了 edge，所以也能继续点 */
+      /* 持续光束（红莲切割者）把「加宽光栅」的穿透折成宽度：
+         它每一跳都会重新打穿整条线，pierce 从 2 加到 3 意味着"能同时打 4 个"，
+         可实战里僵尸很少排成一列，第四个目标几乎不存在 —— 这张卡的穿透部分等于没有。
+         而它的瓶颈恰恰是"线有多宽"（能不能同时罩住并排的两三只）。 */
+      if (def.sustainBeam && map.wide && map.wide.mod.pierce) {
+        map.wide = {
+          id: 'wide', name: '加宽光栅', desc: '光束大幅加宽（持续光束的瓶颈是宽度，不是穿透）',
+          maxLvl: map.wide.maxLvl, mod: { width: map.wide.mod.width + map.wide.mod.pierce }
+        };
+      }
+      if (def.edge) {
+        map.bleed = {
+          id: BLEED_UP.id, name: BLEED_UP.name, desc: BLEED_UP.desc,
+          maxLvl: BLEED_UP.maxLvl, mod: { dmg: BLEED_UP.mod.dmg },
+          special: BLEED_UP.special, icon: BLEED_UP.icon, color: BLEED_UP.color
+        };
+        /* 嗜血：只有"会流血"的刃类才有意义 —— 把贴脸换血变成贴脸吸血。
+           现在是**群体吸血**：一刀扫到几个就按几个回，靠每个目标 0.75 的衰减兜住上限；
+           回旋刃这种"扔出去的刃"也吃这条（弹体命中同样结算，见 updateBullets） */
+        map.leech = {
+          id: 'leech', name: '嗜血',
+          desc: '命中几个就吸几个：每个被砍到的目标都给你回血（越靠后收益递减）',
+          maxLvl: 3, mod: { dmg: 0.03 }, special: 'leech',
+          icon: 'blood', color: '#e0453c'
         };
       }
       D.gearUps[id] = map;
@@ -301,14 +356,20 @@
       desc: '无人机优先攻击被标记的敌人，标记目标受到额外伤害'
     },
     {
-      id: 'ringIce', name: '冰火两重天', icon: 'frostring', color: '#9ad0ff', rare: true,
-      req: { gear: 'frostring', gear2: 'poisongas' },
-      desc: '被冻结的敌人受到的中毒伤害 +40%'
+      /* 冰霜环冻住 + 火焰环/毒雾烧 —— 名字里的"冰火"要真的有火。
+         配方以前只写了毒雾，卡面却叫"冰火两重天"，描述又写成"中毒伤害"，
+         三处对不上（实现其实是"冻结的敌人吃到的自动装备伤害 +40%"）。 */
+      /* 卡面图标用冰霜环的「环形冰晶」(icerim)：这里以前写的是 'frostring'
+         —— 那是装备 id，不是点阵名，icons.js 里根本没有，于是这张卡一直
+         在兜底画一个菱形。 */
+      id: 'ringIce', name: '冰火两重天', icon: 'icerim', color: '#9ad0ff', rare: true,
+      req: { gear: 'frostring', gearAny2: ['firering', 'poisongas'] },
+      desc: '被冻结的敌人受到的火焰与自动装备伤害 +40%'
     },
     {
       id: 'shieldWall', name: '铁壁阵线', icon: 'shield', color: '#adb5bd', rare: true,
       req: { gearAny: ['riotshield', 'energyshield', 'shieldaxe'], stat: 'armor', statLvl: 2 },
-      desc: '持盾时格挡率额外 +10%，受击后短暂减伤'
+      desc: '持盾时格挡率额外 +10%，格挡反击伤害翻倍'
     },
     {
       id: 'autoSwarm', name: '集群协议', icon: 'turret', color: '#ffe066', rare: true,
@@ -346,6 +407,13 @@
       desc: '近战伤害 +18%，挥砍范围 +10%'
     },
     {
+      /* 近战专属的"放血流"：成立之后所有近战都会挂流血（不必点锯齿刃口），
+         再对已经流血的目标加伤 —— 让近战有一条自己的输出路线 */
+      id: 'bloodRage', name: '血怒', icon: 'blood', color: '#9aa3ad', rare: true,
+      req: { fam: 'melee', stat: 'haste', statLvl: 2 },
+      desc: '近战攻击自带流血；对被流血的目标近战伤害 +25%'
+    },
+    {
       id: 'ironWall', name: '钢铁意志', icon: 'armor', color: '#adb5bd', rare: true,
       req: { stat: 'armor', statLvl: 2, stat2: 'vigor', stat2Lvl: 2 },
       desc: '生命低于 35% 时受到的伤害 -25%'
@@ -361,4 +429,105 @@
       desc: '经验获取 +12%，金币获取 +15%'
     }
   ];
+
+  /* ============================================================
+   *  取舍卡（Tradeoff）
+   *
+   *  一张卡同时给"得到"和"失去"，是这套升级里唯一**需要权衡**的选项 ——
+   *  其余卡都是纯收益，三选一于是退化成"挑数值最大的那张"。
+   *  每张只能拿一次，且**不占通用属性槽**（MAX_PASSIVES）：它不该抢走成长空间，
+   *  只是给"我这局想怎么打"多开一个岔路。
+   *
+   *  mod 的语义：正数 = 增益，负数 = 代价，全部由 D.tradeMod() 汇总后折进 recalc。
+   *  字段与 recalc 里的倍率一一对应：
+   *    dmg / atk / spd / range / hp / dur   → 乘法（1 + 累加值）
+   *    count / armor                        → 加法
+   * ============================================================ */
+  D.tradeoffs = [
+    {
+      id: 'lightweight', name: '轻量化', icon: 'swift', color: '#7ee8fa', cat: '机动',
+      gain: '移速 +12%', lose: '伤害 -6%',
+      desc: '移速 +12%，伤害 -6%',
+      mod: { spd: 0.12, dmg: -0.06 }
+    },
+    {
+      id: 'overload', name: '超压装填', icon: 'haste', color: '#ffd166', cat: '火力',
+      gain: '伤害 +22%', lose: '攻速 -8%',
+      desc: '伤害 +22%，攻速 -8%',
+      mod: { dmg: 0.22, atk: -0.08 }
+    },
+    {
+      id: 'scrapammo', name: '粗制弹药', icon: 'ammo', color: '#dee2e6', cat: '火力',
+      gain: '弹丸数量 +1', lose: '射程 -15%',
+      desc: '弹丸数量 +1，射程 -15%',
+      mod: { count: 1, range: -0.15 }
+    },
+    {
+      id: 'heavyrig', name: '重装束带', icon: 'armor', color: '#adb5bd', cat: '生存',
+      gain: '护甲 +3 · 生命 +12%', lose: '移速 -8%',
+      desc: '护甲 +3，最大生命 +12%，移速 -8%',
+      mod: { armor: 3, hp: 0.12, spd: -0.08 }
+    },
+    {
+      id: 'scorched', name: '焦土配方', icon: 'flamer', color: '#ff8b3d', cat: '元素',
+      gain: '燃烧 / 持续效果 +40%', lose: '直接伤害 -8%',
+      desc: '燃烧 / 持续效果 +40%，直接伤害 -8%',
+      mod: { dur: 0.40, dmg: -0.08 }
+    },
+    {
+      id: 'lonewolf', name: '独狼', icon: 'crit', color: '#ff6b6b', cat: '火力',
+      gain: '伤害 +18%', lose: '攻击范围 -12%',
+      desc: '伤害 +18%，攻击范围 -12%',
+      mod: { dmg: 0.18, range: -0.12 }
+    },
+    {
+      id: 'fieldmed', name: '战地医疗', icon: 'regen', color: '#8ce99a', cat: '生存',
+      gain: '最大生命 +20%', lose: '伤害 -8%',
+      desc: '最大生命 +20%，伤害 -8%',
+      mod: { hp: 0.20, dmg: -0.08 }
+    },
+    {
+      id: 'scavvest', name: '拾荒背心', icon: 'vest', color: '#7f9cb8', cat: '生存',
+      gain: '护甲 +2 · 拾取范围 +35%', lose: '伤害 -6%',
+      desc: '护甲 +2，拾取范围 +35%，伤害 -6%',
+      mod: { armor: 2, magnet: 0.35, dmg: -0.06 }
+    },
+    {
+      id: 'shortbarrel', name: '短管改装', icon: 'gauge', color: '#74c0fc', cat: '火力',
+      gain: '攻击范围 +20%', lose: '伤害 -10%',
+      desc: '攻击范围 +20%，伤害 -10%',
+      mod: { range: 0.20, dmg: -0.10 }
+    },
+    {
+      id: 'beltfeed', name: '弹链共享', icon: 'barrel', color: '#e9c46a', cat: '火力',
+      gain: '攻速 +14%', lose: '伤害 -8%',
+      desc: '攻速 +14%，伤害 -8%',
+      mod: { atk: 0.14, dmg: -0.08 }
+    }
+  ];
+
+  /**
+   * 把已拿的取舍卡汇总成一组倍率。
+   * 统一在这里算，卡面 desc 与 recalc 用的是同一份数据，
+   * 不会出现"卡面写 +22% 实际算 12%"这种对不上的事。
+   */
+  D.tradeMod = function (trade) {
+    var m = { dmg: 1, atk: 1, spd: 1, range: 1, hp: 1, dur: 1, magnet: 1, count: 0, armor: 0 };
+    if (!trade) return m;
+    for (var i = 0; i < D.tradeoffs.length; i++) {
+      var t = D.tradeoffs[i];
+      if (!trade[t.id] || !t.mod) continue;
+      var md = t.mod;
+      if (md.dmg) m.dmg += md.dmg;
+      if (md.atk) m.atk += md.atk;
+      if (md.spd) m.spd += md.spd;
+      if (md.range) m.range += md.range;
+      if (md.hp) m.hp += md.hp;
+      if (md.dur) m.dur += md.dur;
+      if (md.magnet) m.magnet += md.magnet;
+      if (md.count) m.count += md.count;
+      if (md.armor) m.armor += md.armor;
+    }
+    return m;
+  };
 })();

@@ -30,6 +30,23 @@
   }
 
   /**
+   * 点到线段的最短距离平方。
+   *
+   * 弹体命中判定用**线段**而不是端点：一帧的位移可能比目标还长。
+   * 反器材步枪 780px/s，30fps 下每帧飞 26px，而一只游荡者的判定直径只有
+   * (5.5 + 1.9) × 2 ≈ 14.8px —— 只看端点时子弹会整个"跨"过它，
+   * 低帧率设备上一半以上的重弹是空包弹（见 tools/check-hit.js）。
+   */
+  function segDist2(px, py, x1, y1, x2, y2) {
+    var dx = x2 - x1, dy = y2 - y1;
+    var len2 = dx * dx + dy * dy;
+    var t = len2 > 0 ? ((px - x1) * dx + (py - y1) * dy) / len2 : 0;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    var qx = x1 + dx * t - px, qy = y1 + dy * t - py;
+    return qx * qx + qy * qy;
+  }
+
+  /**
    * 追踪目标：射程内、且不在"身后"。
    *
    * 以前是 `nearest(b.x,b.y,150)` 无死角索敌 + 4.6 rad/s 转向，
@@ -102,7 +119,14 @@
    * 每 X 次开火蓄一发：从玩家身上拉出一道电弧跳到最近的敌人，再逐跳扩散。
    * X 随等级缩短（6/4/3），跳数 2+lvl、伤害按武器那一发的 40/60/80% 折算，
    * 所以它会跟着你的武器一起变强，而不是越到后期越像挠痒。
+   *
+   * **闸门在这里**：两道电弧之间至少隔 CHAIN_GAP 秒，与武器射速无关。
+   * 蓄能照常按开火次数累积（一次齐射只算一次），但攒到顶之后要等冷却，
+   * 所以冲锋枪 / 持续光束（红莲切割者 12.5 跳/秒）不会把电弧刷成一条线。
+   * 以前是"谁射速高谁放电快"，只能靠把持续光束整个排除来兜住 —— 那样反而不公平。
    */
+  var CHAIN_GAP = 0.45;      // 两道连锁闪电的最小间隔（秒）
+
   Game.chargeChain = function (st, mul, def) {
     var p = this.run.p;
     var lvl = p.chainLvl | 0;
@@ -111,10 +135,13 @@
     var need = HS.Data.chainNeed ? HS.Data.chainNeed(lvl) : (7 - lvl);
     p.chainN = (p.chainN || 0) + 1;
     if (p.chainN < need) return;
+    /* 冷却没到就继续攒着（chainN 不归零），攒满等闸门一开立刻放 */
+    if (this.run.t - (p._chainT || -999) < CHAIN_GAP) return;
     var dmg = (st.dmg || 10) * (mul || 1) * (0.4 + 0.2 * lvl);
     /* 场上没人就先不放电，蓄能够了等下一个目标 */
     if (!this.chainBolt(dmg, 2 + lvl)) return;
     p.chainN = 0;
+    p._chainT = this.run.t;
   };
 
   /** 放一道连锁闪电；返回是否真的打到了人 */
@@ -165,7 +192,12 @@
       radius: opt.radius, dps: opt.dps || 0, dur: opt.dur || 0,
       explode: !!opt.explode, hit: null, shard: opt.shard || 0,
       effect: opt.effect || null, slow: opt.slow || 0, stun: opt.stun || 0,
-      effectDur: opt.effectDur || 0, tag: 'explosive'
+      effectDur: opt.effectDur || 0, tag: 'explosive',
+      /* id 必须透传：landLob 靠它区分冰冻手雷 / 爆闪 / EMP 的落地特效，
+         以前漏了这一行，三种投掷物落地时画的都是同一圈橙火星 */
+      id: opt.id || null,
+      /* fire:1 → 砸出来的是火海，池子里的敌人会被点着 */
+      fire: opt.fire ? 1 : 0
     });
   };
 
@@ -224,23 +256,44 @@
       radius: opt.radius || 0, explode: opt.explode ? 1 : 0, dps: 0, dur: 0,
       split: opt.split || 0, bounce: opt.bounce || 0, homing: opt.homing || 0,
       effect: opt.effect || null, delay: opt.delay || 0,
+      /* 出血层数上限跟着武器分支等级走（回旋刃这类走弹道的带刃武器要用） */
+      bleedLv: opt.bleedLv || 0,
+      /* 嗜血等级（同上：飞行类的刃也要能吸血，见 updateBullets 的命中段） */
+      leechLv: opt.leechLv || 0, leechN: 0,
       /* 拖拽参数（鱼叉 / 钩爪各自不同，见 combat.js 的 pull 效果） */
       pullStop: opt.pullStop, pullK: opt.pullK,
       boomerang: opt.boomerang || 0, tag: opt.tag || null,
       centerBonus: opt.centerBonus || 0,
+      /* 命中即炸（攻城弩阵）：穿透时每一段都炸，所以不能走 explode 那条"炸完就死"的路 */
+      boom: opt.boom || 0,
+      /* 大号弹丸（转管风暴）：只影响表现，判定宽度由 r 决定 */
+      big: opt.big || 0,
+      /* 碎片数必须一起抄进弹体：火箭落地时 explode 读的是**弹体**而不是武器，
+         漏了这一行，RPG / 重型RPG 的「碎片弹」「焚城」全成了空包弹（玩家报过） */
+      shard: opt.shard || 0,
+      /* 回旋刃的"回程中"标记：回程不吃掩体（见 updateBullets 的掩体段） */
+      returning: 0,
       age: 0, didSplit: false
     });
   };
 
   /* ================= 索敌 ================= */
 
+  /**
+   * 最近的敌人 —— **只认看得见的**。
+   * 公路隧道里灯与灯之间几乎全黑，看不见的东西当然锁不上（这就是"灯有用"的地方）：
+   * 站在黑段里，只有贴身（玩家自带那点光）或者走进光池，武器才会自己开火。
+   * 其它地图没有照明场，Light.seen 恒为 true，行为不变。
+   */
   Game.nearest = function (x, y, range) {
     var list = this.run.enemies, best = null, bd = range * range;
     for (var i = 0; i < list.length; i++) {
       var e = list[i];
       if (e.dead || e.submerged) continue;
       var d = U.dist2(e.x, e.y, x, y);
-      if (d < bd) { bd = d; best = e; }
+      if (d >= bd) continue;
+      if (HS.Light && !HS.Light.seen(e.x, e.y, this.run)) continue;
+      bd = d; best = e;
     }
     return best;
   };
@@ -251,12 +304,134 @@
       var e = list[i];
       if (e.dead || e.submerged || used[e.uid]) continue;
       var d = U.dist2(e.x, e.y, x, y);
-      if (d < bd) { bd = d; best = e; }
+      if (d >= bd) continue;
+      if (HS.Light && !HS.Light.seen(e.x, e.y, this.run)) continue;
+      bd = d; best = e;
     }
     return best;
   };
 
   /* ================= 伤害 ================= */
+
+  /**
+   * 点燃：燃烧状态的**唯一入口**。
+   *
+   * 以前每个调用点各写一遍 `e.burn = Math.max(...)` / `e.burnDps = Math.max(...)`，
+   * 结果同一把火在不同武器上强度差三四倍（喷火枪 0.5×单跳、火焰环 0.35×dps、
+   * 燃烧瓶干脆不挂）。集中到这里以后，调平衡只改一个数。
+   *
+   * 叠加规则是"取最强"而不是累加：长燃不能被短燃覆盖，弱火也不能削弱强火。
+   * 点燃瞬间冒一簇火星 —— 玩家得看得出"这一下点着了"，否则 dot 等于暗改。
+   */
+  Game.ignite = function (e, dps, dur) {
+    if (!e || e.dead) return;
+    if (!(dps > 0) || !(dur > 0)) return;
+    var fresh = !(e.burn > 0);
+    e.burn = Math.max(e.burn || 0, dur);
+    e.burnDps = Math.max(e.burnDps || 0, dps);
+    /* 刚点着的那一下补一簇火：燃烧粒子的每帧概率太小，点燃没有"起燃"的瞬间感 */
+    var run = this.run;
+    if (fresh && run && run.fx.length < 210) {
+      for (var i = 0; i < 4; i++) {
+        var a = Math.random() * U.TAU;
+        run.fx.push({
+          kind: 'p', x: e.x + U.rand(-e.r * 0.6, e.r * 0.6), y: e.y - U.rand(0, e.r),
+          vx: Math.cos(a) * U.rand(14, 42), vy: -U.rand(20, 52),
+          life: U.rand(0.24, 0.44), max: 0.44,
+          color: Math.random() < 0.45 ? '#ffd166' : '#ff7a33', size: Math.random() < 0.5 ? 1.6 : 2.4
+        });
+      }
+    }
+  };
+
+  /**
+   * 近战命中的打击感 —— 全部发生在**被砍的目标身上**，屏幕一动不动。
+   *
+   * 三个反馈同时在目标处叠加：
+   *   1. `e.jolt`：精灵自己抖 0.12s + 轻微放大（渲染层读它，逻辑坐标不变）；
+   *   2. 命中点爆 3~4 颗白 / 浅金火星，沿"玩家→目标"方向外甩；
+   *   3. 重击（伤害 ≥12）多一颗大火星 + 一圈很小的白色冲击环。
+   *
+   * 为什么不用震屏：近战每秒能打 4~7 下，链锯/钻头更是每帧判定。
+   * 每次命中抖 3.5px 的话，屏幕等于一直在晃 —— 那不是"有重量"，
+   * 是画面发飘。全屏震动只留给爆炸、载具碾压、跳楼这种低频事件。
+   */
+  Game.hitJolt = function (e, d) {
+    var run = this.run;
+    if (!run || !e || e.dead) return;
+    e.jolt = 0.12;
+    if (run.fx.length > 200) return;
+    /* 满屏挥砍（链锯 / 钻头每帧判定）时限流：0.04s 一次，
+       否则二十只怪同时被扫到，火花会糊成一片白 */
+    if (run.t - (run._joltT || -9) < 0.04) return;
+    run._joltT = run.t;
+    var p = run.p;
+    var a = Math.atan2(e.y - (p.y - 3), e.x - p.x);
+    if (!isFinite(a)) a = 0;
+    var heavy = d >= 12;
+    var n = heavy ? 4 : 3;
+    for (var i = 0; i < n; i++) {
+      var sa = a + U.rand(-0.75, 0.75);
+      var sp = U.rand(50, heavy ? 135 : 105);
+      run.fx.push({
+        kind: 'p', x: e.x + U.rand(-2, 2), y: e.y - e.r * 0.45 + U.rand(-2, 2),
+        vx: Math.cos(sa) * sp, vy: Math.sin(sa) * sp - 24,
+        life: U.rand(0.11, 0.18), max: 0.18,
+        color: i === 0 ? '#ffffff' : '#ffe0a8', size: i === 0 ? 2 : 1.4
+      });
+    }
+    /* 重击补一圈贴着目标的白色小环：不抖屏，但"这一下很重"要看得出来 */
+    if (heavy && run.fx.length < 200) {
+      run.fx.push({
+        kind: 'ring', x: e.x, y: e.y - e.r * 0.4,
+        r: 2, max: 9, life: 0.14, maxLife: 0.14, color: '#fff4d6'
+      });
+    }
+  };
+
+  /**
+   * 出血：带刃冷兵器的专属状态（升级分支「锯齿刃口」，见 upgrades.js）。
+   *
+   * 和燃烧的区别：燃烧是"点着就一直烧"，出血是**越砍越深** —— 每次命中叠一层，
+   * 层数上限由分支等级决定（Lv1/2/3 → 3/4/5 层），持续时间统一 3.2s（每次命中续满）。
+   * 每层每秒伤害 = 这一刀伤害 × 0.18：快刀层数叠得快、重刀单层更痛，两边总量接近。
+   * 伤害走 dot + 无视护甲（伤口不看护甲），和燃烧同一口径。
+   */
+  Game.bleed = function (e, dmg, lv) {
+    if (!e || e.dead) return;
+    var run = this.run;
+    if (!run) return;
+    var cap = 2 + (lv || 1);
+    var stacks = (e.bleedStacks || 0) + 1;
+    if (stacks > cap) stacks = cap;
+    e.bleedStacks = stacks;
+    e.bleedHit = Math.max(e.bleedHit || 0, dmg * 0.22);
+    e.bleed = 3.2;
+    /* 见血的那一下：几点血珠从伤口甩出去。没有这一步，玩家只会以为
+       "伤害变高了"，完全看不出挂了流血。
+       颜色统一走灰黑（和击杀死溅、地面污渍同一套色）—— 红血不适合过审，
+       灰黑在夜色街道上也更"脏"，观感并不吃亏 */
+    if (run.fx.length < 210) {
+      var n = stacks >= cap ? 5 : 3;
+      for (var i = 0; i < n; i++) {
+        var a = Math.random() * U.TAU;
+        run.fx.push({
+          kind: 'p', x: e.x + U.rand(-e.r * 0.6, e.r * 0.6), y: e.y - e.r * 0.3,
+          vx: Math.cos(a) * U.rand(22, 70), vy: Math.sin(a) * U.rand(8, 36) - 16,
+          life: U.rand(0.26, 0.5), max: 0.5,
+          color: Math.random() < 0.4 ? '#6e6e78' : (Math.random() < 0.5 ? '#4a4a52' : '#2c2c33'),
+          size: Math.random() < 0.5 ? 2 : 1.6
+        });
+      }
+    }
+    /* 地上偶尔留一小摊血：层数堆满的目标脚下才明显 */
+    if (stacks >= cap && Math.random() < 0.3 && run.decals.length < 50) {
+      run.decals.push({
+        x: e.x + U.rand(-4, 4), y: e.y + U.rand(0, 4),
+        r: U.rand(2.5, 5), a: 0.5, life: 9, max: 9, blood: 1
+      });
+    }
+  };
 
   /**
    * 唯一伤害入口。
@@ -270,12 +445,22 @@
     /* 潜渡中的水鬼在水面以下：子弹、刀锋、光束都摸不到它。
        只有爆炸（榴弹 / 炸弹 / 炮击）能靠冲击波震到它 —— 这是提前处理它的唯一办法。 */
     if (e.submerged && !opt.force && opt.tag !== 'explosive') return;
+    /* 出水那一拍（emergeGuard）：水花糊在身上，打不中。
+       它辛苦潜过来、咬完一口就站在玩家脸上等死 —— 26 血对中期玩家是 0.2 秒的事，
+       于是"水鬼"整张图只剩一个会送经验的怪。给这 0.35 秒是为了让它**能退回去**，
+       不是让它变肉（血量一点没动）。玩家看到身上糊着一层水膜就别浪费子弹，
+       等它落地再打 —— 这层膜在 render 里是画出来的。 */
+    if (e.emergeGuard > 0) return;
     var run = this.run, p = run.p;
-    var crit = !opt.noCrit && Math.random() < p.crit;
+    var crit = opt.forceCrit || (!opt.noCrit && Math.random() < p.crit);
     var d = dmg;
 
     if (p.ampT > 0) d *= p.ampMul;
     if (e.mark > 0) d *= (e.markMul || 1.08);
+    /* 裂口（机械钻头）：伤口让目标挨打更痛，最多 3 层 × 12% */
+    if (e.rift) d *= 1 + 0.12 * e.rift;
+    /* 血怒（联动）：对已经在流血的目标，近战这一刀更狠 */
+    if (p.syn && p.syn.bloodRage && opt.tag === 'melee' && e.bleed > 0) d *= 1.25;
 
     if (p.syn) {
       if (p.syn.xbStack && p.xbT > 0 && p.xbStack) {
@@ -284,8 +469,10 @@
       if (p.syn.critBurn && crit && (e.burn > 0 || e.synFrozen || (e.slow || 0) > 0.4)) {
         d *= 1.35 + 0.1 * ((p.synLv.critBurn || 1) - 1);
       }
-      /* 冰火两重天：冻住的敌人在区域伤害里更脆 */
-      if (p.syn.ringIce && e.synFrozen && opt.tag === 'auto') d *= 1.4;
+      /* 冰火两重天：冻住的敌人更脆 —— 火焰（tag 'fire'，含火焰环的持续灼烧、喷火枪）
+         和自动装备（tag 'auto'，毒雾 / 无人机 / 炮塔）都吃这 +40%。
+         以前只判 'auto'，所以"冰火"里那一半"火"其实没有效果。 */
+      if (p.syn.ringIce && e.synFrozen && (opt.tag === 'auto' || opt.tag === 'fire')) d *= 1.4;
     }
     if (crit) {
       d *= p.critMul;
@@ -299,16 +486,43 @@
 
     /* 护甲：只挡实弹 / 近战 / 爆炸。火焰、冰霜、持续伤害在调用点标了
        ignoreArmor —— 它们天生无视护甲，所以「破甲」对喷火枪毫无意义。
-       破甲只是把这一层削减掉一部分（p.armorPen）。 */
-    if (e.armor && !opt.ignoreArmor) d *= (1 - e.armor * (1 - p.armorPen));
+       破甲只是把这一层削减掉一部分（p.armorPen 是通用的，opt.pen 是
+       武器自带的，比如机械钻头的"护甲形同虚设"）。 */
+    if (e.armor && !opt.ignoreArmor) {
+      var pen = p.armorPen + (opt.pen || 0);
+      if (pen > 1) pen = 1;
+      d *= (1 - e.armor * (1 - pen));
+    }
 
     /* Boss 减伤：末世街区的暴君皮糙肉厚，吃到的所有伤害打折（e.dmgCut）。
        放在暴击/联动之后，减的是"最终结算值"，倍率再高也压得住。 */
     if (e.dmgCut) d *= (1 - e.dmgCut);
 
+    /* 近战命中：**不抖屏**。
+       挥砍是每秒好几次的高频动作，一记命中抖一次的话屏幕就一直在晃 ——
+       不是"打击感强"，是画面发飘、看久了头晕。改成打在被砍的那只身上：
+       目标自己抖一下 + 命中点爆火花 + 大号数字，视线全被吸到目标上，
+       屏幕本身始终不动。（爆炸 / 碾压 / 跳楼这些低频大事件才配全屏震动） */
+    if (opt.tag === 'melee') this.hitJolt(e, d);
+
+    /* 顿帧：只有近战**挥砍**的重击才停一下（单次伤害 ≥ 目标最大血 15%）。
+       - 弹体命中的近战（回旋刃）不算：它是"一直在刮"，不是一记重拳 ——
+         一整套刀飞出去、每帧都在刮新目标，能把顿帧刷成常态；
+         实测 10 秒里 40% 的帧都在顿帧，世界只走真实时间的 0.64 倍，玩起来就是掉帧。
+       - 同一次顿帧还有 0.4 秒冷却：以前只限制"一帧一次"，多目标挥砍照样能连着刷。
+         现在最多每 0.4 秒来一下，挥砍的"顿"还在，慢动作没有了。 */
+    if (!opt.noHitStop && opt.tag === 'melee' && !run.hitStopOn && e.maxHp > 0 &&
+        d >= e.maxHp * 0.15 && run.t - (run.hitStopT || -9) > 0.4) {
+      run.hitStopOn = 1;
+      run.hitStopT = run.t;
+      this.hitStop = Math.max(this.hitStop || 0, 0.05);
+    }
+
     if (opt.electric && !opt.noConduct && HS.Water) HS.Water.conduct(e, d, run);
     e.hp -= d;
-    e.flash = 1;
+    /* 持续伤害（dot）每帧都在跳，闪白会让目标一直发白 —— 流血还要看清血珠，
+       所以 dot 自己决定闪不闪（出血用 noFlash） */
+    if (!opt.noFlash) e.flash = 1;
 
     /* 处决：这一下把血打到斩杀线以下的，直接收掉 —— 伤害多少不重要，
        重要的是"残血不必再补一枪"。Boss 免疫（否则整场 Boss 战只剩刷血线），
@@ -327,7 +541,9 @@
       run.texts.push({
         x: e.x + U.rand(-2, 2), y: e.y - e.r - 4,
         vy: -26, life: 0.5, max: 0.5,
-        txt: Math.round(d), crit: crit
+        txt: Math.round(d), crit: crit,
+        /* 近战数字加粗放大一档：抖屏撤掉以后，"这一刀多重"全靠数字读 */
+        big: opt.tag === 'melee' ? 1 : 0
       });
       /* 击中反馈按伤害来源分音色（内部自带节流，命中频率太高） */
       HS.Audio.impact(opt.tag, crit);
@@ -351,8 +567,9 @@
   };
 
   /**
-   * 处决表现：一道贴脸的红色斩痕 + 血点 + 「处决」字。
+   * 处决表现：两道交叉的白刃斩痕 + 暗色血点 + 「处决」字。
    * 反馈必须比普通命中重一档，否则玩家感受不到"这一下是斩杀"。
+   * 颜色全部走冷白 / 灰黑：**游戏里不出现红色血**（过审口径，见 Game.bleed）。
    */
   Game.execKill = function (e, opt) {
     var run = this.run, p = run.p;
@@ -360,22 +577,22 @@
     /* 交叉两道斩痕：单弧在低分辨率下容易被当成普通刀光，交叉起来才是"处决" */
     run.fx.push({
       kind: 'slash', x: e.x, y: e.y - 3, ang: a, r: 18 + e.r, arc: 2.5,
-      life: 0.26, max: 0.26, color: '#ff2d2d'
+      life: 0.26, max: 0.26, color: '#e6edf5'
     });
     run.fx.push({
       kind: 'slash', x: e.x, y: e.y - 4, ang: a + 1.05, r: 15 + e.r, arc: 1.9,
-      life: 0.22, max: 0.22, color: '#ffd2d2'
+      life: 0.22, max: 0.22, color: '#9aa6b4'
     });
     run.fx.push({
       kind: 'ring', x: e.x, y: e.y, r: 3, max: 13,
-      life: 0.18, maxLife: 0.18, color: '#ff8a8a'
+      life: 0.18, maxLife: 0.18, color: '#8b939c'
     });
     for (var i = 0; i < 7; i++) {
       run.fx.push({
         kind: 'p', x: e.x + U.rand(-3, 3), y: e.y + U.rand(-4, 2),
         vx: U.rand(-76, 76), vy: U.rand(-96, 12),
         life: U.rand(0.18, 0.34), max: 0.34,
-        color: i % 3 ? '#b3212a' : '#ff6b6b', size: i % 2 ? 2 : 1
+        color: i % 3 ? '#3a3a42' : '#6e6e78', size: i % 2 ? 2 : 1
       });
     }
     if (!opt || !opt.silent) {
@@ -406,6 +623,11 @@
       p.xbT = Math.max(p.xbT || 0, 1.2);
     }
 
+    /* 自爆尸：死的那一刻原地炸开。冲击波不分敌我 ——
+       在尸堆里点它，等于用一发免费的爆炸清场，也可能把自己送走。
+       放在掉落 / 击杀特效之前：爆炸的判定要立刻生效，不能等闪白播完。 */
+    if (e.def && e.def.bomber) this.bomberBlast(e);
+
     /* 龙息喷枪点着的目标烧死后炸开，并把火递给周围的人 —— 火焰会顺着尸群走。
        密集尸群里可能连锁，所以按 0.25s 窗口限 6 次，防止一帧炸出上百次。 */
     if (e.napalm && !e.boss) {
@@ -421,9 +643,9 @@
           var ne = run.enemies[bi];
           if (ne.dead || ne === e) continue;
           if (U.dist(ne.x, ne.y, e.x, e.y) > 34 + ne.r) continue;
-          ne.burn = Math.max(ne.burn || 0, 1.6);
-          ne.burnDps = Math.max(ne.burnDps || 0, nd * 0.5);
           ne.napalm = 1;
+          /* 龙息连锁的火也要走 ignite，才能吃到"刚点着冒火星"的反馈 */
+          this.ignite(ne, nd * 0.5, 1.8);
         }
       }
     }
@@ -463,6 +685,21 @@
     if (run.gems.length > 320) run.gems.shift();
 
     if (e.boss) {
+      /* 双首领：只从存活表里摘掉这一只；还有别的没倒，就不算通关 */
+      if (run.bosses && run.bosses.length) {
+        for (var bq = 0; bq < run.bosses.length; bq++) {
+          if (run.bosses[bq] === e) { run.bosses.splice(bq, 1); break; }
+        }
+      }
+      if (run.bosses && run.bosses.length) {
+        /* 还有一只没倒：把"门面"换成活着的那只，血条继续指着它 */
+        run.boss = run.bosses[0];
+        run.shake = 14;
+        this.explode(e.x, e.y, 96, 0, '#9aa0a8');
+        this.bannerShow((e.def.name || '首领') + ' 倒下了 · 还剩 ' + run.bosses.length + ' 只首领', 3);
+        HS.Audio.win();
+        return;
+      }
       run.boss = null;
       run.bossKilled = true;
       run.shake = 14;
@@ -471,7 +708,8 @@
         /* 三只首领轮流出场，间隔随场次收缩：100s → 最短 60s */
         run.nextBossAt = run.t + Math.max(60, 100 - (run.bossCount - 1) * 8);
         run.bossSpawned = false;
-        run.drops.push(this.hintDrop({ kind: 'chest', x: e.x, y: e.y, bob: 0, life: 60, dead: false }, 7));
+        var esp = this.dropSpot(e.x, e.y);
+        run.drops.push(this.hintDrop({ kind: 'chest', x: esp.x, y: esp.y, bob: 0, life: 60, dead: false }, 7));
         run.drops.push({ kind: 'heart', x: e.x + 14, y: e.y, bob: 0, life: 60, dead: false });
         this.bannerShow('首领倒下 · 死区仍在扩张', 3);
         HS.Audio.win();
@@ -540,6 +778,259 @@
     }
   };
 
+  /**
+   * 自爆尸的死后爆炸。
+   *
+   * 为什么不是"主动自爆"：主动自爆会变成"它自己走过来炸你"，玩家只能躲；
+   * 而"被你打死才炸"把开关交到玩家手里 —— 什么时候点掉它、站在哪个角度点，
+   * 是这张图唯一的博弈。
+   *
+   * 伤害口径：对丧尸是**满额**（所以能当连锁炸弹用，但一帧里最多结算 8 次，
+   * 否则一屏三十只自爆尸会互相引爆成一串雷）；对玩家按距离衰减，
+   * 站在最外圈只掉一半多点。
+   */
+  Game.bomberBlast = function (e) {
+    var run = this.run;
+    if (!run) return;
+    var r = e.blastR || (e.def && e.def.blastR) || 46;
+    var mul = e.blastMul || (e.def && e.def.blastDmg) || 2.2;
+    var dmg = Math.max(4, e.dmg * mul);
+    var i;
+
+    run.fx.push({
+      kind: 'ring', x: e.x, y: e.y, r: 4, max: r,
+      life: 0.3, maxLife: 0.3, color: '#e6ff62'
+    });
+    run.fx.push({
+      kind: 'ring', x: e.x, y: e.y, r: 2, max: r * 0.58,
+      life: 0.42, maxLife: 0.42, color: '#fbffc8'
+    });
+    if (run.fx.length < 210) {
+      for (i = 0; i < 12; i++) {
+        var ba = Math.random() * U.TAU;
+        var bs = U.rand(40, 150);
+        run.fx.push({
+          kind: 'p', x: e.x, y: e.y,
+          vx: Math.cos(ba) * bs, vy: Math.sin(ba) * bs - 20,
+          life: U.rand(0.2, 0.45), max: 0.45,
+          color: i % 3 === 0 ? '#e6ff62' : (i % 3 === 1 ? '#8a9a52' : '#3a3a42'),
+          size: U.rand(1.4, 2.6)
+        });
+      }
+    }
+
+    /* 对丧尸：范围内的全吃。连锁窗口限 8 次，够炸穿一小片尸群，不会卡帧 */
+    if (run.blastT === undefined || run.t - run.blastT > 0.2) {
+      run.blastT = run.t;
+      run.blastN = 0;
+    }
+    if (run.blastN < 8) {
+      run.blastN++;
+      for (i = 0; i < run.enemies.length; i++) {
+        var o = run.enemies[i];
+        if (o.dead || o === e) continue;
+        var od = U.dist(o.x, o.y, e.x, e.y);
+        if (od > r + o.r) continue;
+        this.hurtEnemy(o, dmg * (1 - 0.4 * (od / (r || 1))), { tag: 'explosive' });
+      }
+    }
+
+    /* 对玩家 */
+    var p = run.p;
+    var pd = U.dist(p.x, p.y, e.x, e.y);
+    if (pd < r + p.r) {
+      this.damagePlayer(Math.max(4, dmg * (1 - 0.45 * (pd / (r || 1)))));
+    }
+
+    /* 震屏压得很低：这张图一次能引出五六只自爆尸连环炸，
+       原来每发都顶到 6px，一串炸下来整块屏幕在抖，看见什么全靠猜。
+       3.2 / 1.5 是"能感觉到，但不晃眼"的量；连续炸还有 R.shakeAmount 的疲劳再打折。 */
+    run.shake = Math.max(run.shake, e.mini ? 1.5 : 3.2);
+    /* 大小崽分开：三只小崽连着炸时用轻的那档，别把玩家的枪声盖掉 */
+    HS.Audio.pop(!!e.mini);
+  };
+
+  /**
+   * 育母吐崽：一口气挤出 n 只小自爆尸。
+   *
+   * 小崽不是"第二只 Boss"：体型 62%、血量三成、炸得也轻。
+   * 它们的作用是逼玩家在"继续输出育母"和"先清崽"之间做选择 ——
+   * 放着不管，三十秒后走廊里全是会炸的东西。
+   */
+  Game.spitBombers = function (boss, n) {
+    var run = this.run, p = run.p;
+    var base = Math.atan2(p.y - boss.y, p.x - boss.x);
+    for (var i = 0; i < n; i++) {
+      var a = base + (i - (n - 1) / 2) * 0.5;
+      var sx = boss.x + Math.cos(a) * (boss.r + 7);
+      var sy = boss.y + Math.sin(a) * (boss.r + 7);
+      var m = this.spawnEnemy('bomber', false, sx, sy);
+      m.mini = true;
+      m.scale *= 0.62;
+      m.r *= 0.62;
+      m.maxHp = Math.max(7, m.maxHp * 0.28);
+      m.hp = m.maxHp;
+      m.xp = Math.max(1, Math.round(m.xp * 0.5));
+      m.gold = 1;
+      m.dmg *= 0.6;
+      m.blastR = 30;
+      m.blastMul = 1.3;
+      /* 出生硬直：给玩家 0.35 秒"这里冒出来三只"的反应时间 */
+      m.spawnT = 0.35;
+      for (var k = 0; k < 5; k++) {
+        run.fx.push({
+          kind: 'p', x: sx + U.rand(-4, 4), y: sy + U.rand(-4, 4),
+          vx: U.rand(-40, 40), vy: U.rand(-50, 6),
+          life: 0.4, max: 0.4,
+          color: k % 2 ? '#e3d67e' : '#a89a52', size: 2
+        });
+      }
+    }
+    run.fx.push({
+      kind: 'ring', x: boss.x, y: boss.y, r: boss.r * 0.5, max: boss.r * 2.1,
+      life: 0.4, maxLife: 0.4, color: '#e3d67e'
+    });
+    run.shake = Math.max(run.shake, 5);
+    HS.Audio.spit();
+  };
+
+  /**
+   * 眩晕：尖啸者的超声命中后，玩家短暂"站不起来" —— 不能走、不能开枪。
+   *
+   * 这是全游戏唯一一个夺走操作权的负面状态，所以有三条硬约束：
+   *   ① 只有一只怪会，且有 6 秒以上的冷却；
+   *   ② 屏幕必须给足反馈（脚下光环 + 人物头上的「眩晕」+ 画面抖动），
+   *      否则玩家只会觉得"我明明推着摇杆啊"；
+   *   ③ 车里只吃三成 —— 车窗和引擎声挡掉大半，也算给"开车冲场"留一条活路。
+   */
+  Game.stunPlayer = function (sec) {
+    var run = this.run, p = run.p;
+    if (!p || this.state !== 'run') return 0;
+    var s = p.veh ? sec * 0.35 : sec;
+    if (s <= 0) return 0;
+    if (p.stun > s) return 0;          // 已经在更长的眩晕里，不叠加
+    p.stun = s;
+    p.stunMax = s;
+    p.hurtT = Math.max(p.hurtT, 0.25);
+    run.fx.push({
+      kind: 'ring', x: p.x, y: p.y + 2, r: 6, max: 30,
+      life: 0.32, maxLife: 0.32, color: '#bfe9ff'
+    });
+    if (run.texts.length > 30) run.texts.shift();
+    run.texts.push({
+      x: p.x, y: p.y - 18, vy: -18, life: 1, max: 1, txt: '眩晕', crit: true
+    });
+    run.shake = Math.max(run.shake, 4);
+    HS.Audio.hurt();
+    /* 耳鸣跟上：眩晕是"操作被夺走"，光有受击音玩家只会以为自己挨了一下打 */
+    HS.Audio.tinnitus();
+    return s;
+  };
+
+  /**
+   * 裂口：机械钻头钻出来的伤口 —— 让目标**受到的伤害变高**（可叠 3 层，每层 +12%）。
+   *
+   * 和出血分工：出血是目标自己掉血（自伤），裂口是"挨打更痛"（易伤）。
+   * 两者都挂在目标身上，钻头一件武器把两个都带了，所以它打 boss / 精英最狠。
+   */
+  Game.rift = function (e) {
+    if (!e || e.dead) return;
+    var run = this.run;
+    if (!run) return;
+    e.rift = Math.min(3, (e.rift || 0) + 1);
+    e.riftT = 4;
+    if (run.fx.length < 210) {
+      for (var i = 0; i < 3; i++) {
+        var a = Math.random() * U.TAU;
+        run.fx.push({
+          kind: 'p', x: e.x, y: e.y - e.r * 0.3,
+          vx: Math.cos(a) * U.rand(26, 76), vy: Math.sin(a) * U.rand(16, 54) - 10,
+          life: 0.22, max: 0.22,
+          color: Math.random() < 0.5 ? '#e6edf5' : '#9aa6b4', size: 1.4
+        });
+      }
+    }
+  };
+
+  /**
+   * 近战清弹：挥砍 / 突刺时把攻击范围内的敌方子弹一并扫掉。
+   *
+   * 近战最难受的不是打不动，而是被 200px 外的匪徒和呕酸尸白打 ——
+   * 走过去的一路上全是子弹。这一刀扫掉范围内的弹丸，
+   * 等于给近战一条"用身法换安全"的活路（不是无敌，只是把远程的节奏打断）。
+   */
+  Game.sweepBullets = function (p, r) {
+    var run = this.run;
+    if (!run) return 0;
+    var list = run.ebullets, r2 = r * r, n = 0, i;
+    for (i = 0; i < list.length; i++) {
+      var b = list[i];
+      if (b.dead) continue;
+      if (U.dist2(b.x, b.y, p.x, p.y) > r2) continue;
+      b.dead = true;
+      n++;
+      if (n <= 4 && run.fx.length < 210) {
+        run.fx.push({
+          kind: 'p', x: b.x, y: b.y,
+          vx: U.rand(-34, 34), vy: U.rand(-36, -6),
+          life: 0.2, max: 0.2, color: '#e6edf5', size: 1.4
+        });
+      }
+    }
+    return n;
+  };
+
+  /**
+   * 格挡反击：盾牌挡下伤害时，对身前一圈打回去。
+   *
+   * 以前"格挡"只是一个隐形的伤害系数，玩家根本不知道自己刚挡住了什么 ——
+   * 现在挡下来会有一下可见的反震（白光环 + 伤害数字 + 击退），
+   * 盾牌才像一件"拿在手上的东西"。
+   */
+  Game.blockCounter = function (p) {
+    var run = this.run;
+    if (!run) return;
+    if (p.counterCd > 0) return;
+    var i, ent = null, def = null;
+    for (i = 0; i < p.weapons.length; i++) {
+      var d = HS.Data.gear[p.weapons[i].id];
+      if (d && d.counter) { ent = p.weapons[i]; def = d; break; }
+    }
+    if (!ent) return;
+    var st = HS.Gear.stat(ent, p);
+    var dmg = (st.dmg || 0) * (def.counter || 0.9);
+    var rad = Math.max(34, (st.range || 30) * 1.4);
+    /* 「铁壁阵线」联动：反击伤害翻倍、冷却减半 —— 让这条老联动和新机制接上 */
+    if (p.syn && p.syn.shieldWall) {
+      dmg *= 2;
+      rad *= 1.15;
+      p.counterCd = 0.14;
+    } else {
+      p.counterCd = 0.28;
+    }
+    var list = run.enemies, hit = 0;
+    for (i = 0; i < list.length; i++) {
+      var e = list[i];
+      if (e.dead || !this.sameLevel(e)) continue;
+      var dx = e.x - p.x, dy = e.y - p.y;
+      var d2 = dx * dx + dy * dy;
+      if (d2 > rad * rad) continue;
+      this.hurtEnemy(e, dmg, { tag: 'melee' });
+      var dd = Math.sqrt(d2) || 1;
+      e.x += dx / dd * 7;
+      e.y += dy / dd * 7;
+      hit++;
+    }
+    if (run.fx.length < 210) {
+      run.fx.push({
+        kind: 'ring', x: p.x, y: p.y + 1, r: rad, max: rad,
+        life: 0.26, maxLife: 0.26, color: '#dcecff'
+      });
+    }
+    /* 反击同样不抖屏：hurtEnemy 已经逐个目标做了 hitJolt，这里只补音效 */
+    if (hit) HS.Audio.impact('melee', false);
+  };
+
   Game.damagePlayer = function (dmg, opt) {
     var run = this.run, p = run.p;
     if (this.state !== 'run') return;
@@ -569,6 +1060,8 @@
       run.texts.push({
         x: p.x + 6, y: p.y - 12, vy: -30, life: 0.5, max: 0.5, txt: '格挡', crit: true
       });
+      /* 挡住就反震：盾牌的收益要看得见，否则玩家只会觉得自己"运气好" */
+      this.blockCounter(p);
     }
     if (opt.ranged) dmg *= (1 - (p.rangedCut || 0));
     /* 钢铁意志：残血时更抗揍，把「堆护甲」变成一套能翻盘的保命逻辑 */
@@ -577,7 +1070,9 @@
     p.hp -= d;
     p.invuln = 0.45 + (p.invulnBonus || 0);
     p.hurtT = 0.3;
-    run.shake = Math.max(run.shake, 4);
+    /* 受击的震屏压到 2.5：保留"被打到了"的信号，但别再整屏晃。
+       后期尸潮里受击很密，4px 的抖动会让人看不清自己站在哪。 */
+    run.shake = Math.max(run.shake, 2.5);
     HS.Audio.hurt();
     if (run.search) this.cancelSearch('被击中，搜刮中止');
     if (run.texts.length > 30) run.texts.shift();
@@ -586,6 +1081,63 @@
       txt: '-' + Math.round(d), hurt: true
     });
     P.vibrate('light');
+  };
+
+  /**
+   * 水鬼拖拽：咬中之后把玩家往最近的深水区拖。
+   *
+   * 它不靠伤害杀人 —— 一口只有 5 点，真正要命的是"把你从干地拖进泥沼"：
+   * 深水里玩家只剩三成移速，尸群一围就出不来。
+   * **玩家的操作不被剥夺**：拖拽只是一段持续位移，摇杆随时可以抵消它。
+   * 这和尖啸者的眩晕是两种东西 —— 后者是"整个人定住，连枪都开不了"。
+   */
+  var DRAG_TIME = 1.4;      // 拖拽持续多久
+  var DRAG_SPD = 48;        // 拖拽速度：干地上玩家跑得掉，浅水僵持，深水才拖得动
+  var DRAG_REACH = 170;     // 找方向时最远看到哪 —— 桥面正中到深水约 110px，要看得见
+  var DRAG_IMMUNE = 2.5;    // 松口之后多久免疫（防止被一路接力拖到水中央）
+
+  Game.dragToWater = function (from) {
+    var run = this.run, p = run.p;
+    if (!HS.Water || p.veh || p.roof) return false;
+    /* **已经站在深水里就不再拖了**。这是它最要命的一个坑：
+       以前不看当前水深，玩家被拖进水里之后它还在往更深处推，一路推到离公路
+       几十米的水中央 —— 深水里玩家只有三成移速（≈18px/s），普通丧尸走不进来，
+       BOSS 也过不来：既打不到东西、也死不掉，整局卡在那里。
+       拖到水里它的目的就算达成了，剩下该靠玩家自己往回爬。 */
+    if (HS.Water.zone(p.x, p.y, run) === 2) return false;
+    /* 松口后有一小段免疫：否则几只水鬼轮流咬，等于一直在被拖 */
+    if (p.dragImmune > 0) return false;
+    /* 八个方向各探一段，取"最近方向上的第一处深水"，**只用来定方向**。
+       它不保证一次就拖进水里：拖拽总位移 ≈ 1.4×48 ≈ 67px，而玩家站在桥面正中时
+       深水在 110px 外 —— 一次拖不到位是正常的，被咬第二次就进去了。
+       以前这里卡"只认 88px 内的深水"，结果站在中间的玩家永远不触发，技能等于没有。 */
+    var bestA = -1, bestD = 1e9, i, d, x, y;
+    for (i = 0; i < 8; i++) {
+      var a = i * Math.PI / 4;
+      for (d = 26; d <= DRAG_REACH; d += 8) {
+        x = p.x + Math.cos(a) * d;
+        y = p.y + Math.sin(a) * d;
+        if (HS.Water.zone(x, y, run) === 2) {
+          if (d < bestD) { bestD = d; bestA = a; }
+          break;
+        }
+      }
+    }
+    if (bestA < 0) return false;        // 附近一圈都没有深水：不拖
+    /* 已经在被拖就只刷新时长，不叠加速度 —— 几只水鬼同时咬不该把人钉在原地 */
+    if (!(p.dragT > 0)) {
+      p.dragT = DRAG_TIME;
+      p.dragVX = Math.cos(bestA) * DRAG_SPD;
+      p.dragVY = Math.sin(bestA) * DRAG_SPD;
+    }
+    /* 免疫从"松口"开始算，所以是 拖拽时长 + 免疫时长 */
+    p.dragImmune = DRAG_TIME + DRAG_IMMUNE;
+    run.fx.push({
+      kind: 'ring', x: p.x, y: p.y + 2, r: 4, max: 22,
+      life: 0.45, maxLife: 0.45, color: '#8fc4b8'
+    });
+    if (HS.Audio && HS.Audio.splash) HS.Audio.splash(false);
+    return true;
   };
 
   /* ================= 子弹 ================= */
@@ -606,56 +1158,97 @@
         if (ht) turnTo(b, ht.x, ht.y, (strong ? 4.2 : 2.0) * dt);
       }
       /* 回旋刃：过半程折返，回到手上之前一直保持伤害判定 */
-      if (b.boomerang && b.age > b.max * 0.45) {
-        turnTo(b, p.x, p.y, 9 * dt);
+      if (b.boomerang && (b.returning || b.age > b.max * 0.45)) {
+        b.returning = 1;
+        var hdx = p.x - b.x, hdy = p.y - b.y;
+        var hd2 = hdx * hdx + hdy * hdy;
+        /* 贴身 60px 内把转身速度拉满（40rad/s ≈ 6px 转弯半径）：刀才会真的落回手上，
+           而不是按 9rad/s 的宽弧绕着人转圈 —— 那看起来就是"回来的位置很奇怪" */
+        turnTo(b, p.x, p.y, (hd2 < 3600 ? 40 : 9) * dt);
+        /* 收在 16px：再近就钻进身体里了，这里正好是"接住"的位置 */
+        if (hd2 < 16 * 16) { b.dead = true; continue; }
+        /* 兜底：绕圈绕太久（玩家一直在跑、被墙角挡住）也要收，
+           否则又回到"越攒越多"。2.2 倍名义射程时间 ≈ 2.8 秒 */
+        if (b.age > b.max * 2.2) { b.dead = true; continue; }
         if (b.life < 0.08) b.life = 0.08;
       }
 
-      b.x += b.vx * dt;
-      b.y += b.vy * dt;
+      /* 这一帧的飞行时间：打满射程的那一帧只飞剩下的那一点。
+         以前是"先飞满一整帧再看 life<=0"，于是最后一帧的线段从来没被判定过 ——
+         目标恰好站在射程边缘时（远距离的静止目标、贴着最大射程补刀），
+         这一发会整发打空。现在先把位移夹到射程终点，判定照常做，
+         飞行时间用完的收尾（火箭炸开 / 落地）挪到这一帧的最末尾。 */
+      var step = dt;
+      if (b.life > 0 && b.life < step) step = b.life;
+      /* 记下这一帧的起点：命中判定走「线段」而不是「点」（见 segDist2） */
+      var ox = b.x, oy = b.y;
+      b.x += b.vx * step;
+      b.y += b.vy * step;
       b.life -= dt;
 
-      if (b.life <= 0) {
-        if (b.kind === 'lob') this.landLob(b);
-        else if (b.explode && b.kind === 'rocket') this.explode(b.x, b.y, b.radius || 24, b.dmg, b.color, b);
-        b.dead = true;
+      if (b.kind === 'lob') {
+        if (b.life <= 0) { this.landLob(b); b.dead = true; }
         continue;
       }
-      if (b.kind === 'lob') continue;
 
-      /* 掩体挡子弹；站在楼顶时子弹越过女儿墙，不再被建筑遮挡 */
-      if (HS.World.hitBlock(b.x, b.y, b.r, !!p.roof)) {
-        if (b.explode && b.kind === 'rocket') this.explode(b.x, b.y, b.radius || 24, b.dmg, b.color, b);
-        b.dead = true;
-        run.fx.push({
-          kind: 'p', x: b.x, y: b.y,
-          vx: U.rand(-40, 40), vy: U.rand(-40, 40),
-        life: 0.2, max: 0.2, color: '#ffd166', size: 1.6
-      });
-        continue;
+      /* 掩体挡子弹；站在楼顶时子弹越过女儿墙，不再被建筑遮挡。
+         **回旋刃是例外**：它是"扔出去还要回来"的，撞墙就消失等于这一刀白扔；
+         而回程被车壳 / 墙角挡住是天天发生的事（玩家报过"碰到墙就回不来"）。
+         去程撞上 → 退回这一帧的起点、弹一下，并直接进入折返；
+         回程撞上 → 干脆不理掩体，回手优先（宁可穿过一块车壳，也别把刀吞了）。 */
+      if (!b.returning && HS.World.hitBlock(b.x, b.y, b.r, !!p.roof)) {
+        if (b.boomerang) {
+          b.x = ox; b.y = oy;
+          b.vx *= -0.5; b.vy *= -0.5;
+          b.returning = 1;
+          if (run.fx.length < 200) {
+            run.fx.push({
+              kind: 'p', x: b.x, y: b.y, vx: U.rand(-30, 30), vy: U.rand(-30, 30),
+              life: 0.16, max: 0.16, color: '#dfe6ee', size: 1.4
+            });
+          }
+        } else {
+          if (b.explode && b.kind === 'rocket') this.explode(b.x, b.y, b.radius || 24, b.dmg, b.color, b);
+          b.dead = true;
+          run.fx.push({
+            kind: 'p', x: b.x, y: b.y,
+            vx: U.rand(-40, 40), vy: U.rand(-40, 40),
+            life: 0.2, max: 0.2, color: '#ffd166', size: 1.6
+          });
+          continue;
+        }
       }
 
       /* 载具是掩体：玩家/自己的弹幕会被车壳挡下（自己开的那辆除外），
          但**不打掉车壳耐久** —— 载具耐久只该被丧尸啃和撞车消耗，
-         否则站在车边开一梭子就把待用的车打成废铁，等于自己拆自己的路 */
+         否则站在车边开一梭子就把待用的车打成废铁，等于自己拆自己的路。
+         回旋刃同样例外：撞车壳 = 弹回来，不掉刀。 */
       var vveh = null;
-      for (var vi = 0; vi < run.vehicles.length; vi++) {
-        var vvk = run.vehicles[vi];
-        if (vvk === p.veh || vvk.wreck) continue;
-        HS.Vehicle.bodyNear(vvk, b.x, b.y, _bodyOut);
-        if (_bodyOut.d < b.r + vvk.def.w * 0.5) { vveh = vvk; break; }
+      if (!b.returning) {
+        for (var vi = 0; vi < run.vehicles.length; vi++) {
+          var vvk = run.vehicles[vi];
+          if (vvk === p.veh || vvk.wreck) continue;
+          HS.Vehicle.bodyNear(vvk, b.x, b.y, _bodyOut);
+          if (_bodyOut.d < b.r + vvk.def.w * 0.5) { vveh = vvk; break; }
+        }
       }
       if (vveh) {
-        if (b.explode && b.kind === 'rocket') {
-          this.explode(b.x, b.y, b.radius || 24, b.dmg, b.color, b);
+        if (b.boomerang) {
+          b.x = ox; b.y = oy;
+          b.vx *= -0.5; b.vy *= -0.5;
+          b.returning = 1;
+        } else {
+          if (b.explode && b.kind === 'rocket') {
+            this.explode(b.x, b.y, b.radius || 24, b.dmg, b.color, b);
+          }
+          run.fx.push({
+            kind: 'p', x: b.x, y: b.y,
+            vx: U.rand(-50, 50), vy: U.rand(-50, 30),
+            life: 0.16, max: 0.16, color: '#ffd166', size: 1.6
+          });
+          b.dead = true;
+          continue;
         }
-        run.fx.push({
-          kind: 'p', x: b.x, y: b.y,
-          vx: U.rand(-50, 50), vy: U.rand(-50, 30),
-          life: 0.16, max: 0.16, color: '#ffd166', size: 1.6
-        });
-        b.dead = true;
-        continue;
       }
 
       for (var j = 0; j < enemies.length; j++) {
@@ -665,10 +1258,32 @@
         if (e.submerged) continue;
         if (b.hit && b.hit[e.uid]) continue;
         var rr = e.r + b.r;
-        if (U.dist2(e.x, e.y, b.x, b.y) >= rr * rr) continue;
+        /* 扫掠判定：这一帧的弹道（ox,oy → b.x,b.y）只要擦到就命中。
+           原来只测终点，高速弹体会整帧跨过小目标（反器材步枪 780px/s 在
+           30fps 下每帧 26px，比游荡者的判定直径还长）—— 低帧率下会凭空丢伤害。 */
+        if (segDist2(e.x, e.y, ox, oy, b.x, b.y) >= rr * rr) continue;
 
-        this.hurtEnemy(e, b.dmg, { tag: b.tag });
+        this.hurtEnemy(e, b.dmg, { tag: b.tag, noHitStop: 1 });
+        /* 嗜血：飞出去的刃（回旋刃）打中也要回血。
+           以前只有挥砍 / 突刺两条路结算 leech，弹体这一路完全没读 ——
+           玩家在回旋刃上点满嗜血，打到人却一滴血不回。
+           衰减口径和挥砍一致：同一把刀第 n 个目标按 0.75^(n-1) 折算。 */
+        if (b.leechLv) {
+          var leechK = Math.pow(0.75, b.leechN || 0);
+          b.leechN = (b.leechN || 0) + 1;
+          var leechHeal = b.dmg * 0.018 * b.leechLv * leechK;
+          if (leechHeal > 0 && HS.Gear && HS.Gear.leech) {
+            HS.Gear.leech(p, leechHeal);
+            if (HS.Gear.leechTrail) HS.Gear.leechTrail(p, e, 1);
+          }
+        }
         this.bulletEffect(b, e, p);
+
+        /* 攻城弩阵：命中就炸一次，**箭本身继续穿**（穿透过去的每一段都炸）。
+           quiet 掉震动和音效：一轮 8 箭 × 最多 5 段，震屏会把画面抖散。 */
+        if (b.boom > 0) {
+          this.explode(b.x, b.y, b.boom, b.dmg * 0.55, b.color, { quiet: true });
+        }
 
         var sp = Math.sqrt(b.vx * b.vx + b.vy * b.vy) || 1;
 
@@ -713,6 +1328,16 @@
         }
         break;
       }
+
+      /* 射程走完的收尾：先做完这一帧的命中判定，再让子弹消失
+         （火箭在自己的落点炸开；反器材步枪这类重弹则是"打满射程就停"）。
+         这里重新读一次 life：弹射 / 回旋在命中时会把 life 续上，别把它当场枪毙。 */
+      if (b.life <= 0 && !b.dead) {
+        if (b.explode && b.kind === 'rocket') {
+          this.explode(b.x, b.y, b.radius || 24, b.dmg, b.color, b);
+        }
+        b.dead = true;
+      }
     }
     U.compact(list, 'dead');
   };
@@ -722,8 +1347,12 @@
     if (b.effect === 'explode') {
       this.explode(b.x, b.y, b.radius || 26, b.dmg * 0.6, b.color, b);
     } else if (b.effect === 'burn') {
-      e.burn = Math.max(e.burn || 0, 1.5);
-      e.burnDps = Math.max(e.burnDps || 0, b.dmg * 0.5);
+      /* 龙息弹这类"命中点燃"的子弹：燃烧 dot 按这一发的 0.8 倍给，
+         打三枪就有一把火在持续咬 —— 以前 0.5 倍、1.5 秒，几乎看不见 */
+      this.ignite(e, b.dmg * 0.8, 2.0);
+    } else if (b.effect === 'bleed') {
+      /* 回旋刃这类"掷出去的刃"走弹道，出血从这里补上（层数上限随分支等级） */
+      this.bleed(e, b.dmg, b.bleedLv);
     } else if (b.effect === 'pull') {
       /* 鱼叉：把猎物往自己这边拽。
          · 距离越远拽得越狠（最多 150px），但停在贴身 26px 外，别把敌人塞进怀里
@@ -861,7 +1490,10 @@
 
     run.pools.push({
       x: b.x, y: b.y, r: b.radius, life: b.dur, max: b.dur,
-      dps: b.dps, tick: 0, dead: false
+      dps: b.dps, tick: 0, dead: false,
+      /* fire:1 → 池子里的敌人会被点着（见 updateEnemies 的火池段）。
+         燃烧瓶 / 火焰类投掷物走这条；钻核（gear.js 里 push 的 core 池）不吃。 */
+      fire: b.fire ? 1 : 0
     });
     run.fx.push({
       kind: 'ring', x: b.x, y: b.y, r: 4, max: b.radius,
@@ -1081,6 +1713,131 @@
     return B.routeStart(e, bestB, tx, ty, r);
   }
 
+  /**
+   * 被实心道具（车壳 / 车堆 / 隧道衬砌）顶住时，选**哪一边**滑过去。
+   *
+   * 以前是 `wallSide = (uid & 1) ? 1 : -1` —— 一只怪的左右终身固定。
+   * 在空地上够用，但公路隧道的车堆和墙一起夹出的是"死角落"：
+   * 奇偶决定了它偏偏往墙那侧滑，撞回去、再滑、再撞回来，永远出不来。
+   *
+   * 这里改成探针：沿期望方向左右各打三条射线（0.7 / 1.15 / 1.6 rad，
+   * 距离 r+8 / r+20 / r+32），哪侧空得多往哪侧走；两侧一样才用奇偶决定，
+   * 这样同一批怪也不会整队贴同一边。
+   */
+  function probeSide(e, ang) {
+    var bestSide = 1, bestScore = -1;
+    for (var si = 0; si < 2; si++) {
+      var sd = si === 0 ? 1 : -1;
+      var score = 0;
+      for (var k = 0; k < 3; k++) {
+        var aa = ang + sd * (0.7 + k * 0.45);
+        var dd = e.r + 8 + k * 12;
+        if (!HS.World.insideSolid(e.x + Math.cos(aa) * dd, e.y + Math.sin(aa) * dd)) {
+          score += 1 + k;      // 远端通比近端通更值钱：说明那边真能走出去
+        }
+      }
+      if (score > bestScore) { bestScore = score; bestSide = sd; }
+    }
+    if (bestScore <= 0) bestSide = (e.uid & 1) ? 1 : -1;
+    /* 分不出高下时按奇偶错开，避免一整队挤向同一侧 */
+    if (bestScore === 3) bestSide = (e.uid & 1) ? 1 : -1;
+    return bestSide;
+  }
+
+  /**
+   * 直线 a→b 上有没有实心块（每 9px 采一点，最多 26 点）。
+   * 只用来判断"还要不要继续侧滑"，所以精度比建筑那套 raycast 粗糙得多，
+   * 够用且便宜。
+   */
+  function segBlocked(x0, y0, x1, y1) {
+    var dx = x1 - x0, dy = y1 - y0;
+    var d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 6) return false;
+    var n = Math.min(26, Math.ceil(d / 9));
+    for (var i = 1; i <= n; i++) {
+      var t = i / n;
+      if (HS.World.insideSolid(x0 + dx * t, y0 + dy * t)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * 被实心道具顶住时的局部寻路（只在需要时算，最多 3 次/秒）。
+   * 返回 true 表示这帧要用 e.navX / e.navY 当目标。
+   * 水图交给 Water.route（它认深水，不认车壳），这里避开。
+   */
+  function propNav(e, tx, ty, dt) {
+    if (HS.Game.run.map.water) return false;
+    if (e.navT > 0) {
+      e.navT -= dt;
+      if (U.dist(e.x, e.y, e.navX, e.navY) > 11) return true;
+      e.navT = 0;
+    }
+    if (e.blockT < 0.7) return false;
+    if (e.navCd > 0) { e.navCd -= dt; return false; }
+    e.navCd = 0.35;
+    var rt = HS.World.route(e.x, e.y, tx, ty);
+    if (!rt) return false;
+    e.navX = rt.x; e.navY = rt.y; e.navT = 0.55;
+    return true;
+  }
+
+  /**
+   * 把卡死的杂兵挪到附近最近的一块空地（约 22~46px，朝玩家那侧找）。
+   * 这是最后一道兜底：楼顶那只"3 秒没进展就放它下楼"的看门狗同一个思路 ——
+   * 一个原地打转的丧尸没有任何观赏价值，玩家只会觉得"这游戏的怪坏了"。
+   */
+  function unstick(e, p, run) {
+    /* 冷却 5 秒：别让它一路"传送"穿过整个车堆 */
+    if (e.uT > 0) return false;
+    var away = Math.atan2(p.y - e.y, p.x - e.x);
+    for (var wi = 0; wi < 12; wi++) {
+      var wa = away + (wi % 2 ? 1 : -1) * (0.25 + wi * 0.16);
+      var wr = 22 + (wi >> 1) * 12;
+      var wx = e.x + Math.cos(wa) * wr, wy = e.y + Math.sin(wa) * wr;
+      if (HS.World.insideSolid(wx, wy) || HS.World.insideSolid(wx, wy - 4) ||
+          HS.World.insideSolid(wx, wy + 4) || HS.World.insideSolid(wx - 4, wy) ||
+          HS.World.insideSolid(wx + 4, wy)) continue;
+      for (var wf = 0; wf < 4; wf++) {
+        run.fx.push({
+          kind: 'p', x: e.x + U.rand(-4, 4), y: e.y + U.rand(-3, 3),
+          vx: U.rand(-30, 30), vy: U.rand(-24, 8),
+          life: 0.3, max: 0.3, color: '#5a5f66', size: 1.6
+        });
+      }
+      e.x = wx; e.y = wy;
+      e.blockT = 0; e.wallT = 0; e.navT = 0;
+      e.progBest = undefined; e.progT = 0; e.uT = 5;
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 育母的"弹药"：身边最近的一只自爆尸（小的也行，大的优先）。
+   * 只挑没在被扔、没死的 —— 否则会出现两只 Boss 抢同一只的怪事。
+   */
+  Game.nearestBomber = function (x, y, range) {
+    var run = this.run, list = run.enemies, best = null, bd = range * range;
+    for (var i = 0; i < list.length; i++) {
+      var o = list[i];
+      if (o.dead || !o.def || !o.def.bomber) continue;
+      if (o.hurlT > 0 || o.mini) continue;
+      var d2 = U.dist2(o.x, o.y, x, y);
+      if (d2 < bd) { bd = d2; best = o; }
+    }
+    if (best) return best;
+    /* 只有小崽也凑合：小崽炸得轻，但"被扔出去"这件事本身有威胁 */
+    bd = range * range;
+    for (var j = 0; j < list.length; j++) {
+      var m = list[j];
+      if (m.dead || !m.def || !m.def.bomber || m.hurlT > 0) continue;
+      var md2 = U.dist2(m.x, m.y, x, y);
+      if (md2 < bd) { bd = md2; best = m; }
+    }
+    return best;
+  };
+
   /** 找到附近还活着的诱饵 */
   function nearestLure(x, y, range) {
     var list = HS.Game.run.devices, best = null, bd = range * range;
@@ -1110,6 +1867,15 @@
       if (e.dead) continue;
 
       e.flash = Math.max(0, e.flash - dt * 5);
+      /* 水鬼的出水保护（见 hurtEnemy / 潜渡分支） */
+      if (e.emergeGuard > 0) e.emergeGuard = Math.max(0, e.emergeGuard - dt);
+      /* 熔核层数：断火 0.5 秒就凉下来（红莲进化的 beamOnce 负责往上叠） */
+      if (e.meltT > 0) {
+        e.meltT -= dt;
+        if (e.meltT <= 0) e.melt = 0;
+      }
+      /* 近战受击的自身抖动（见 Game.hitJolt）：只影响这一只的绘制，不碰镜头 */
+      if (e.jolt > 0) e.jolt = Math.max(0, e.jolt - dt);
       /* 步频跟着实际速度走：快的丧尸腿频高，被冰冻减速时会明显变慢 */
       var animSpd = e.speed * (1 - (e.slow || 0));
       e.anim += dt * (3 + animSpd * 0.18) * (e.type === 'crawler' ? 1.4 : 1);
@@ -1120,9 +1886,26 @@
         if (e.slowT <= 0) { e.slow = 0; e.synFrozen = 0; }
       }
       if (e.burn > 0) {
+        var burnDps = e.burnDps || 0;
         e.burn -= dt;
-        this.hurtEnemy(e, (e.burnDps || 0) * dt, { silent: true, noCrit: true, dot: 1, ignoreArmor: 1 });
+        if (burnDps > 0) {
+          this.hurtEnemy(e, burnDps * dt, { silent: true, noCrit: true, dot: 1, ignoreArmor: 1 });
+        }
         if (e.burn <= 0) e.burnDps = 0;
+        /* 燃烧要"看得出来在掉血"：每 0.55s 弹一个小号橙字，写的是**每秒伤害**。
+           全局限流 0.1s 一个 —— 一排怪同时烧的时候不至于把屏幕糊满数字。
+           以前 dot 全 silent，玩家只能看到敌人莫名掉血，以为是谁的直伤。 */
+        e.burnNumT = (e.burnNumT || 0) + dt;
+        if (burnDps >= 0.6 && e.burnNumT >= 0.55 && run.t - (run._burnNumT || -9) > 0.1) {
+          e.burnNumT = 0;
+          run._burnNumT = run.t;
+          if (run.texts.length > 32) run.texts.shift();
+          run.texts.push({
+            x: e.x + U.rand(-3, 3), y: e.y - e.r - 3,
+            vy: -18, life: 0.55, max: 0.55,
+            txt: Math.round(burnDps), dot: 1
+          });
+        }
         /* 燃烧要有看得见的火苗 —— 否则"弹丸点燃目标"这套机制等于不存在 */
         if (run.fx.length < 200 && Math.random() < 0.3) {
           run.fx.push({
@@ -1134,11 +1917,64 @@
         }
         if (e.dead) continue;
       }
+      /* 出血：层数越高掉得越快，到点一次性清空。走 dot + 无视护甲，
+         和燃烧同一口径，但**不闪白**（否则整只怪一直是白的，血珠看不见） */
+      if (e.bleed > 0) {
+        e.bleed -= dt;
+        var bdps = (e.bleedHit || 0) * (e.bleedStacks || 1);
+        if (bdps > 0) {
+          this.hurtEnemy(e, bdps * dt, { silent: true, noCrit: true, dot: 1, noFlash: 1,
+            ignoreArmor: 1, tag: 'bleed' });
+        }
+        if (e.bleed <= 0) { e.bleed = 0; e.bleedStacks = 0; e.bleedHit = 0; }
+        /* 持续往外渗血：一两颗暗色血点，频率低到不会糊屏 */
+        if (!e.dead && run.fx.length < 200 && Math.random() < 0.22) {
+          run.fx.push({
+            kind: 'p', x: e.x + U.rand(-e.r, e.r), y: e.y + U.rand(-2, e.r * 0.8),
+            vx: U.rand(-7, 7), vy: U.rand(6, 22),
+            life: 0.3, max: 0.3,
+            color: Math.random() < 0.5 ? '#4a4a52' : '#2c2c33', size: 1.4
+          });
+        }
+        if (e.dead) continue;
+      }
       if (e.mark > 0) e.mark -= dt;
+      /* 裂口到点愈合（4 秒没被继续钻就恢复） */
+      if (e.riftT > 0) {
+        e.riftT -= dt;
+        if (e.riftT <= 0) { e.riftT = 0; e.rift = 0; }
+      }
       /* 眩晕：完全停止行动（闪光弹 / EMP / 电击警棍） */
       if (e.stun > 0) {
         e.stun -= dt;
         e.gait += (0 - e.gait) * Math.min(1, dt * 10);
+        continue;
+      }
+      /* 刚从育母的育囊里挤出来：0.35s 的落地硬直。
+         否则它们一出生就贴在玩家身上，爆炸完全没有反应时间 */
+      if (e.spawnT > 0) {
+        e.spawnT -= dt;
+        e.anim += dt * 2.4;
+        e.gait += (0.35 - e.gait) * Math.min(1, dt * 8);
+        continue;
+      }
+
+      /* 被育母扔出来的自爆尸：走抛物线，落地就炸。
+         这一段必须在寻路之前，否则它会一边飞一边按地面 AI 追人。 */
+      if (e.hurlT > 0) {
+        e.hurlT -= dt;
+        var hk = e.hurlDur > 0 ? 1 - Math.max(0, e.hurlT) / e.hurlDur : 1;
+        if (hk > 1) hk = 1;
+        e.x = e.hurlX + (e.hurlX2 - e.hurlX) * hk;
+        e.y = e.hurlY + (e.hurlY2 - e.hurlY) * hk;
+        e.hurlH = Math.sin(hk * Math.PI) * (e.hurlArc || 46);
+        e.hurlSpin = (e.hurlSpin || 0) + dt * 11;
+        e.anim += dt * 8;
+        if (e.hurlT <= 0 || hk >= 1) {
+          e.hurlT = 0; e.hurlH = 0;
+          /* 落地即引爆：hurtEnemy 走 killEnemy → bomberBlast，玩家/尸群一起招呼 */
+          this.hurtEnemy(e, 1e9, { noCrit: true, tag: 'explosive' });
+        }
         continue;
       }
 
@@ -1154,11 +1990,43 @@
           if (e.roof !== pRoof) {
             var downB = e.roof;
             if (downB.stairs) {
-              tx = downB.stairs.x; ty = downB.stairs.y;
-              if (U.dist(e.x, e.y, tx, ty) < 9) {
+              /* 下楼的目标要带绕障：楼顶没有网格寻路，直线冲楼梯会被
+                 屋顶风口顶死（"上得去下不来"就是这个）。roofStep 会把
+                 被风口挡住的直线换成"绕到风口角上"的临时目标。 */
+              var dop = HS.Buildings.roofStep(e, downB);
+              if (dop) { tx = dop.x; ty = dop.y; }
+              else { tx = downB.stairs.x; ty = downB.stairs.y; }
+              /* 到达判定按"楼梯矩形"算：站到楼梯边上就该下去，
+                 以前只认中心点 9px，靠边站会被判定成没到，一直贴着磨 */
+              var sDist = HS.Buildings.stairsDist(e.x, e.y, downB);
+              if (sDist < 5) {
                 e.roof = null;
-                e.x = tx + U.rand(-3, 3);
-                e.y = ty + U.rand(-3, 3);
+                e.roofT = 0;
+                e.x = downB.stairs.x + U.rand(-3, 3);
+                e.y = downB.stairs.y + U.rand(-3, 3);
+                /* 下楼时把楼顶残留的绕行/贴墙状态清掉，否则会在室内
+                   继续按楼顶的方向斜着走一段 */
+                e.wpT = 0;
+                e.wallT = 0;
+                e.blockT = 0;
+              } else {
+                /* 兜底看门狗：流场正常情况下总能走到楼梯，只有"被同伴挤在
+                   风口角落"这种偶发情况会真的走不动。3 秒没有任何进展就
+                   直接放它下楼 —— 一个卡在楼顶的丧尸没有任何观赏价值，
+                   但玩家会以为"这游戏丧尸下不来" */
+                e.roofT = (e.roofT || 0) + dt;
+                if (e.roofBest === undefined || sDist < e.roofBest - 1) {
+                  e.roofBest = sDist;
+                  e.roofT = 0;
+                } else if (e.roofT > 3) {
+                  e.roof = null;
+                  e.roofT = 0;
+                  e.x = downB.stairs.x + U.rand(-3, 3);
+                  e.y = downB.stairs.y + U.rand(-3, 3);
+                  e.wpT = 0;
+                  e.wallT = 0;
+                  e.blockT = 0;
+                }
               }
             } else {
               e.roof = null;
@@ -1168,10 +2036,16 @@
           if (pRoof.stairs) {
             /* 已经摸进楼里：顺着楼梯上楼顶 */
             tx = pRoof.stairs.x; ty = pRoof.stairs.y;
-            if (U.dist(e.x, e.y, tx, ty) < 10) {
+            if (HS.Buildings.stairsDist(e.x, e.y, pRoof) < 5) {
               e.roof = pRoof;
               e.x = pRoof.stairs.x + U.rand(-6, 6);
               e.y = pRoof.stairs.y + U.rand(-6, 6);
+              /* 落点可能压在屋顶风口上，先推出来再算"到了"，
+                 否则一上楼就被顶开、下一帧又判定没到，来回抖 */
+              HS.Buildings.resolveRoof(e, pRoof);
+              e.wpT = 0;
+              e.wallT = 0;
+              e.blockT = 0;
               e.climbCd = 0.5;
               for (var cf = 0; cf < 4; cf++) {
                 run.fx.push({
@@ -1212,6 +2086,11 @@
       if (!e.boss && !e.roof && !navUsed && wallRoute(e, tx, ty, dt, false)) {
         tx = e.wpX; ty = e.wpY;
       }
+      /* 再兜一层：楼体之外还有车堆这种"几块旋转矩形拼出的凹形"，
+         纯侧滑会在口袋里横跳，这里换成 12px 粗网格的局部寻路 */
+      if (!e.boss && !e.roof && !navUsed && propNav(e, p.x, p.y, dt)) {
+        tx = e.navX; ty = e.navY; navUsed = true;
+      }
 
       /* 诱饵：附近的丧尸会改追诱饵（Boss 不上当） */
       if (!e.boss && run.devices.length) {
@@ -1230,11 +2109,21 @@
       if (!e.boss && !e.def.ranged) {
         if (e.wallT > 0) {
           e.wallT -= dt;
-          var wa = Math.atan2(uy, ux) + e.wallSide * 1.15;
+          /* 1.5 rad ≈ 纯侧滑：只沿障碍物表面走，别再把 1/4 的力顶进车里。
+             之前用 1.15 rad，一半的位移被车壳顶回来，0.5 秒只挪十几像素，
+             刚好不够绕出一辆车的宽度，于是在车堆边上反复横跳。 */
+          var wa = Math.atan2(uy, ux) + e.wallSide * 1.5;
           ux = Math.cos(wa); uy = Math.sin(wa);
-        } else if (e.blockT > 0.45 && !(e.wpT > 0)) {
-          e.wallT = 0.6;
-          if (!e.wallSide) e.wallSide = (e.uid & 1) ? 1 : -1;
+          if (e.navT > 0) e.navT = 0;   // 寻路接管了就别再侧滑
+          /* 绕出来了就立刻恢复直追（别把整段侧滑走完，否则会平白绕远） */
+          if (!segBlocked(e.x, e.y, p.x, p.y)) e.wallT = 0;
+        } else if (e.blockT > 0.3 && !(e.wpT > 0) && !(e.navT > 0) &&
+          segBlocked(e.x, e.y, p.x, p.y)) {
+          /* 只在"直线真被挡住"时才开始侧滑，侧滑期间也不再看计时器：
+             一直滑到直线通了为止（上限 1.6s）。固定 0.5~0.75s 的窗口
+             在车堆这种厚障碍前面根本不够，滑一半就放弃 = 原地打转。 */
+          e.wallT = 1.6;
+          e.wallSide = probeSide(e, Math.atan2(uy, ux));
         }
       }
 
@@ -1378,11 +2267,15 @@
           e.aSt = e.aSt || 0;
           e.aCleaveCd = (e.aCleaveCd === undefined ? 3.2 : e.aCleaveCd) - dt;
           e.aLeapCd = (e.aLeapCd === undefined ? 6.2 : e.aLeapCd) - dt;
+          /* 交叉斩的三个数字，**判定与地上的裂纹都只读这一份**：
+             CL_CAST 是"多近才起手"（够近就抡），CL_R / CL_HALF 才是"这一刀砍得到哪"。
+             以前这两个概念混着用（裂纹按起手距离 132 画），地上的弧就圈到了砍不到的地方。 */
+          var CL_CAST = 132, CL_R = 118, CL_HALF = 0.86;
           if (e.aSt === 0) {
             e.x += ux * spd * dt; e.y += uy * spd * dt;
             if (e.aLeapCd <= 0 && d < 290 && d > 45) {
               e.aSt = 2; e.aT = 0.82; e.aAim = Math.atan2(p.y - e.y, p.x - e.x);
-            } else if (e.aCleaveCd <= 0 && d < 132) {
+            } else if (e.aCleaveCd <= 0 && d < CL_CAST) {
               e.aSt = 1; e.aT = 0.68; e.aAim = Math.atan2(p.y - e.y, p.x - e.x);
               run.shake = Math.max(run.shake, 3);
             }
@@ -1400,15 +2293,21 @@
               for (var ax = -1; ax <= 1; ax += 2) {
                 var aa = e.aAim + ax * 0.46;
                 run.fx.push({ kind: 'slash', x: e.x, y: e.y - 3, ang: aa, r: 92, arc: 1.3, life: 0.24, max: 0.24, color: '#ffb27a' });
-                if (U.dist(e.x, e.y, p.x, p.y) < 118) {
+                if (U.dist(e.x, e.y, p.x, p.y) < CL_R) {
                   var diff = pAng - aa;
                   while (diff > Math.PI) diff -= U.TAU;
                   while (diff < -Math.PI) diff += U.TAU;
-                  if (Math.abs(diff) < 0.86) this.damagePlayer(e.dmg * 1.15);
+                  if (Math.abs(diff) < CL_HALF) this.damagePlayer(e.dmg * 1.15);
                 }
                 var tipX = e.x + Math.cos(aa) * 72, tipY = e.y + Math.sin(aa) * 72;
                 HS.World.smash(tipX, tipY, 22, this);
-                if (HS.Water) HS.Water.breakTerrain(tipX, tipY, e.axeRage ? 25 : 20, run);
+                /* 地上留的不是"斧尖砸的坑"，而是**斧刃划过的一道弧**。
+                   半径取**伤害判定边界**（CL_R），不是斧刃视觉长度（92），也不是起手距离（CL_CAST）——
+                   裂纹要圈住"这一刀能砍到哪"，玩家站在弧外面就该是安全的。
+                   弧长同样取判定半角 ×2：两道斧的弧正好铺满那条扇形，
+                   判定能打到的最外沿和裂纹是同一条线。
+                   狂暴时判定范围不变，只是动作快、冷却短，所以半径不变。 */
+                if (HS.Water) HS.Water.crackArc(e.x, e.y, aa, CL_HALF * 2, CL_R, run);
               }
               run.shake = Math.max(run.shake, 7);
               HS.Audio.boom();
@@ -1539,6 +2438,241 @@
               this.bannerShow('猎杀者发出了嚎叫', 1.8);
               e.sSt = 0;
             }
+          }
+        } else if (bt === 'shrieker') {
+          /* ---- 尖啸者（公路隧道 · 双首领之一）----
+             改动（用户反馈）：超声**不再是前方扇形**，只要玩家在视野里、距离够近，
+             一嗓子就晕 —— 走廊这么窄，"绕到背后"本来也不是像样的应对。
+             真正的应对变成：**躲到车壳后面**（看不见就不吃）或者干脆跑出射程。
+
+             两招：
+               ① 短啸：仰头蓄声 0.55s → 全向 250px 内、视线通 → 掉血 + 眩晕 0.9s，冷却 7.5s。
+               ② 长啸（新）：蓄 0.5s 后**持续尖啸 2.4s**，每 0.32s 补一次短眩晕 + 掉血。
+                  被它锁住会一直站不起来 —— 唯一的解法是躲进车后的视线死角，
+                  断掉视线它就当场收声。冷却 12s，用完这 12 秒是输出窗口。
+             贴身改用骨爪横扫。 */
+          e.hSt = e.hSt || 0;
+          e.hSonicCd = (e.hSonicCd === undefined ? 4.2 : e.hSonicCd) - dt;
+          e.hChanCd = (e.hChanCd === undefined ? 9 : e.hChanCd) - dt;
+          e.hClawCd = (e.hClawCd === undefined ? 2.4 : e.hClawCd) - dt;
+          var hLvl = (!p.roof && !e.roof) || (p.roof && e.roof === p.roof);
+          var hSee = hLvl && d < 250 && !segBlocked(e.x, e.y, p.x, p.y);
+
+          if (e.hSt === 0) {
+            /* 中距离站位：喊得到、抓不到。贴太近它会退半步 */
+            if (d > 200) { e.x += ux * spd * dt; e.y += uy * spd * dt; }
+            else if (d < 96) { e.x -= ux * spd * 0.62 * dt; e.y -= uy * spd * 0.62 * dt; }
+            if (e.hClawCd <= 0 && hLvl && d < 56) {
+              e.hSt = 3; e.hT = 0.34;
+              e.hAng = Math.atan2(p.y - e.y, p.x - e.x);
+            } else if (e.hChanCd <= 0 && hSee && d < 230) {
+              /* 长啸优先：先蓄 0.5s 再进持续段 */
+              e.hSt = 5; e.hT = 0.5;
+              e.hChanT = 2.4; e.hChanTick = 0;
+              e.hAng = Math.atan2(p.y - e.y, p.x - e.x);
+              run.shake = Math.max(run.shake, 3);
+              HS.Audio.scream(true);
+            } else if (e.hSonicCd <= 0 && hSee) {
+              e.hSt = 1; e.hT = 0.55;
+              e.hAng = Math.atan2(p.y - e.y, p.x - e.x);
+              run.shake = Math.max(run.shake, 2);
+              HS.Audio.scream(true);
+            }
+          } else if (e.hSt === 1) {
+            /* 短啸：仰头、胸腔撑开，喉咙口一圈圈往里收的光环 —— 这就是"要喊了" */
+            e.hT -= dt;
+            e.hAng = Math.atan2(p.y - e.y, p.x - e.x);
+            var hk = 1 - Math.max(0, e.hT) / 0.55;
+            if (Math.random() < 0.7 && run.fx.length < 210) {
+              run.fx.push({
+                kind: 'ring', x: e.x + Math.cos(e.hAng) * (e.r + 2),
+                y: e.y - 4 + Math.sin(e.hAng) * (e.r + 2),
+                r: 16 - hk * 10, max: 16 - hk * 10, life: 0.1, maxLife: 0.1,
+                color: '#bfe9ff'
+              });
+            }
+            if (e.hT <= 0) {
+              var hRange = 250;
+              run.fx.push({
+                kind: 'ring', x: e.x, y: e.y, r: 8, max: hRange,
+                life: 0.5, maxLife: 0.5, color: '#bfe9ff'
+              });
+              run.fx.push({
+                kind: 'ring', x: e.x, y: e.y, r: 4, max: hRange * 0.72,
+                life: 0.36, maxLife: 0.36, color: '#e8f8ff'
+              });
+              /* 全向：不再判角度，只判"看得见 + 够近" */
+              if (hSee) {
+                this.damagePlayer(e.dmg * 0.35);
+                this.stunPlayer(0.9);
+              }
+              run.shake = Math.max(run.shake, 8);
+              HS.Audio.scream(false);
+              e.hSt = 2; e.hT = 0.5;
+              e.hSonicCd = 7.5;
+            }
+          } else if (e.hSt === 2) {
+            /* 收声：喉咙还在震，站定一拍 */
+            e.hT -= dt;
+            if (e.hT <= 0) e.hSt = 0;
+          } else if (e.hSt === 3) {
+            /* 骨爪横扫：贴身那一下，蓄力 0.34s */
+            e.hT -= dt;
+            e.hAng = Math.atan2(p.y - e.y, p.x - e.x);
+            if (e.hT <= 0) {
+              run.fx.push({
+                kind: 'slash', x: e.x, y: e.y - 2, ang: e.hAng, r: 62, arc: 1.15,
+                life: 0.22, maxLife: 0.22, color: '#dcecff'
+              });
+              var cpa = Math.atan2(p.y - e.y, p.x - e.x);
+              var cdiff = cpa - e.hAng;
+              while (cdiff > Math.PI) cdiff -= U.TAU;
+              while (cdiff < -Math.PI) cdiff += U.TAU;
+              if (hLvl && d < 70 && Math.abs(cdiff) < 0.9) {
+                this.damagePlayer(e.dmg * 0.95);
+              }
+              e.hSt = 4; e.hT = 0.28;
+              e.hClawCd = 2.6;
+              HS.Audio.impact('melee', false);
+            }
+          } else if (e.hSt === 4) {
+            e.hT -= dt;
+            if (e.hT <= 0) e.hSt = 0;
+          } else if (e.hSt === 5) {
+            /* 长啸：0.5s 起手 → 2.4s 持续段，每 0.32s 一次"再晕一下" */
+            if (e.hT > 0) {
+              e.hT -= dt;
+              e.hAng = Math.atan2(p.y - e.y, p.x - e.x);
+              if (e.hT <= 0) { e.hChanT = 2.4; e.hChanTick = 0; HS.Audio.scream(false); }
+            } else {
+              e.hChanT -= dt;
+              e.hChanTick = (e.hChanTick || 0) - dt;
+              /* 每一拍：看得见就往死里震，看不见（躲进车后）就断声 */
+              if (e.hChanTick <= 0) {
+                e.hChanTick = 0.32;
+                if (hSee) {
+                  this.damagePlayer(e.dmg * 0.10);
+                  this.stunPlayer(0.42);
+                  run.shake = Math.max(run.shake, 5);
+                  run.fx.push({
+                    kind: 'ring', x: e.x, y: e.y, r: 10, max: 190,
+                    life: 0.42, maxLife: 0.42, color: '#bfe9ff'
+                  });
+                } else {
+                  /* 视线断了：立刻收声，玩家获得 12 秒输出窗口 */
+                  e.hSt = 2; e.hT = 0.45;
+                  e.hChanCd = 12;
+                  HS.Audio.zap();
+                }
+              }
+              if (e.hSt === 5 && e.hChanT <= 0) {
+                e.hSt = 2; e.hT = 0.55;
+                e.hChanCd = 12;
+              }
+            }
+          }
+        } else if (bt === 'brood') {
+          /* ---- 育母（公路隧道 · 双首领之二）----
+             慢慢压上来 → 育囊绷紧(0.9s) → 挤出 3 只小自爆尸 → 缓一拍。
+             贴身用育囊撞（范围大、伤害高，但 0.45s 蓄力看得见）。
+             它自己几乎不走位，难的是"你舍不舍得顶着三只小崽继续打它"。 */
+          e.bSt = e.bSt || 0;
+          e.bSpawnCd = (e.bSpawnCd === undefined ? 3.4 : e.bSpawnCd) - dt;
+          e.bSlamCd = (e.bSlamCd === undefined ? 3.2 : e.bSlamCd) - dt;
+          e.bThrowCd = (e.bThrowCd === undefined ? 5 : e.bThrowCd) - dt;
+          var bLvl = (!p.roof && !e.roof) || (p.roof && e.roof === p.roof);
+          if (e.bSt === 0) {
+            e.x += ux * spd * dt;
+            e.y += uy * spd * dt;
+            if (e.bSpawnCd <= 0 && bLvl && d < 340) {
+              e.bSt = 1; e.bT = 0.9;
+              e.bAng = Math.atan2(p.y - e.y, p.x - e.x);
+            } else if (e.bSlamCd <= 0 && bLvl && d < 64) {
+              e.bSt = 3; e.bT = 0.45;
+              e.bAng = Math.atan2(p.y - e.y, p.x - e.x);
+            } else if (e.bThrowCd <= 0 && bLvl && d > 66 && d < 320) {
+              /* 抓投：先挑一只身边的自爆尸当"弹药"，没有就过一会儿再看 */
+              var vic = this.nearestBomber(e.x, e.y, 175);
+              if (vic) {
+                e.bSt = 5; e.bT = 0.5;
+                e.bVictim = vic;
+                e.bAng = Math.atan2(p.y - e.y, p.x - e.x);
+                HS.Audio.spit();
+              } else {
+                e.bThrowCd = 1.4;
+              }
+            }
+          } else if (e.bSt === 1) {
+            /* 育囊绷紧：整只往后仰，囊皮上的缝一鼓一鼓 */
+            e.bT -= dt;
+            if (Math.random() < 0.55 && run.fx.length < 210) {
+              var a2b = Math.random() * U.TAU;
+              run.fx.push({
+                kind: 'p', x: e.x + U.rand(-e.r * 0.6, e.r * 0.6), y: e.y + U.rand(0, e.r * 0.7),
+                vx: Math.cos(a2b) * 8, vy: -U.rand(10, 30),
+                life: 0.4, max: 0.4, color: Math.random() < 0.5 ? '#e3d67e' : '#a89a52', size: 2
+              });
+            }
+            if (e.bT <= 0) {
+              this.spitBombers(e, 3);
+              e.bSt = 2; e.bT = 0.55;
+              e.bSpawnCd = 7.4;
+            }
+          } else if (e.bSt === 2) {
+            e.bT -= dt;
+            if (e.bT <= 0) e.bSt = 0;
+          } else if (e.bSt === 3) {
+            /* 育囊撞：往前扑半步，落地一圈冲击 */
+            e.bT -= dt;
+            if (e.bT <= 0) {
+              var bSr = 62;
+              run.fx.push({
+                kind: 'ring', x: e.x + Math.cos(e.bAng) * 18, y: e.y + Math.sin(e.bAng) * 10,
+                r: 6, max: bSr, life: 0.3, maxLife: 0.3, color: '#e3d67e'
+              });
+              var spl = Math.atan2(p.y - e.y, p.x - e.x);
+              var bsDev = spl - e.bAng;
+              while (bsDev > Math.PI) bsDev -= U.TAU;
+              while (bsDev < -Math.PI) bsDev += U.TAU;
+              if (bLvl && d < bSr + p.r && Math.abs(bsDev) < 1.1) {
+                this.damagePlayer(e.dmg * 1.15);
+              }
+              run.shake = Math.max(run.shake, 7);
+              HS.Audio.boom();
+              e.bSt = 4; e.bT = 0.34;
+              e.bSlamCd = 3.4;
+            }
+          }
+          if (e.bSt === 4) {
+            e.bT -= dt;
+            if (e.bT <= 0) e.bSt = 0;
+          } else if (e.bSt === 5) {
+            /* 抓取：0.5s 把那只自爆尸拎起来（它这段时间还在乱走，抓空了就作废） */
+            e.bT -= dt;
+            var vv = e.bVictim;
+            if (!vv || vv.dead || vv.hurlT > 0) {
+              e.bSt = 0; e.bThrowCd = 1;
+            } else if (e.bT <= 0) {
+              e.bSt = 6; e.bT = 0.35;
+              e.bThrowCd = 7.5;
+              /* 抛物线扔向玩家当前位置；距离越远飞得越久、弧越高 */
+              var flight = 0.55 + Math.min(0.4, d / 700);
+              vv.hurlT = flight;
+              vv.hurlDur = flight;
+              vv.hurlX = vv.x; vv.hurlY = vv.y;
+              vv.hurlX2 = p.x; vv.hurlY2 = p.y;
+              vv.hurlArc = 40 + Math.min(32, d * 0.12);
+              vv.hurlSpin = 0;
+              vv.blastMul = (vv.blastMul || (vv.def && vv.def.blastDmg) || 2.2) * 1.3;
+              vv.speed = 0;
+              run.fx.push({
+                kind: 'ring', x: vv.x, y: vv.y, r: 4, max: 22,
+                life: 0.24, maxLife: 0.24, color: '#e3d67e'
+              });
+            }
+          } else if (e.bSt === 6) {
+            e.bT -= dt;
+            if (e.bT <= 0) e.bSt = 0;
           }
         } else {
           /* ---- 血肉暴君（末世街区）----
@@ -1714,7 +2848,8 @@
       } else if (e.def.submerge) {
         /* ---- 水鬼：潜渡 ----
            0 追（和普通丧尸一样绕深水）→ 1 下潜（0.45s 冒泡，仍是活靶子）
-           → 2 水下突进（1.5s 无视深水、子弹打不到，水面只剩涟漪）
+           → 2 水下突进（无视深水、子弹打不到，水面只剩涟漪；时长按到玩家的
+               实际距离给，所以它能一路潜到脚下，最长 4.5s）
            → 3 出水（溅水，贴脸浮出才咬得到）→ 冷却。
            深水对所有其他单位都是墙，只有它是近路：玩家得盯着水面的涟漪走位。 */
         e.subCd = (e.subCd === undefined ? 2.4 + Math.random() * 2 : e.subCd) - dt;
@@ -1731,7 +2866,16 @@
           }
           if (e.subT <= 0) {
             e.subState = 2;
-            e.subT = e.def.subDur || 1.5;
+            /* 潜行时长按**这段距离**给，不再是固定 1.5 秒。
+               1.5 秒只能游 34×1.75×1.5 ≈ 89px，可它从 250px 外就会起潜 ——
+               于是经常"潜到一半自己浮上来"，在半路上白白挨打，
+               玩家看到的就是"水鬼技能够不着人"。现在算到能贴到脚下为止，
+               上限 4.5 秒（防止玩家一路跑、它一直在水下追着不露头）。 */
+            var subSpd0 = e.speed * 1.75;
+            /* ×1.3 是转向损耗的余量：它一边游一边修正朝向（2.2 rad/s），
+               实际走过的路比直线长，不留余量就会差最后十几像素 */
+            var needT = (U.dist(e.x, e.y, p.x, p.y) - 12) / subSpd0 * 1.3;
+            e.subT = Math.min(4.8, Math.max(1.8, needT));
             e.submerged = true;
             e.subAng = Math.atan2(p.y - e.y, p.x - e.x);
             HS.Audio.splash(false);
@@ -1757,8 +2901,15 @@
               r: 1, max: 9, life: 0.5, maxLife: 0.5, color: '#8fc4b8'
             });
           }
-          if (e.subT <= 0 || dpd < 20) {
+          /* 出水阈值必须**小于咬击阈值**（e.r + p.r + 8 = 18.5），否则会出现
+             "贴脸浮出却咬空"：以前这里是 20，判定咬击时 dpd 已经落在 20~22，
+             差 1.5px 就吃不到那一口 —— 它辛苦潜到脚下，玩家只看到它冒个头。 */
+          if (e.subT <= 0 || dpd < 18) {
             e.subState = 3; e.subT = 0.3; e.submerged = false;
+            /* 出水保护：从浮出到落地这一拍打不中（见 hurtEnemy）。
+               必须在 e.submerged = false 之后给 —— 先能被打，再给保护，
+               否则会出现"浮出来了却还按水下无敌算"的怪现象。 */
+            e.emergeGuard = e.def.emergeGuard || 0.35;
             HS.Audio.splash(true);
             for (var sw = 0; sw < 6; sw++) {
               run.fx.push({
@@ -1768,7 +2919,12 @@
               });
             }
             /* 出水一口：贴脸浮出才咬得到，站着不动才会被偷袭 */
-            if (dpd < e.r + p.r + 8 && !p.roof && !e.roof) this.damagePlayer(e.dmg);
+            if (dpd < e.r + p.r + 8 && !p.roof && !e.roof) {
+              this.damagePlayer(e.dmg);
+              /* 咬中之后不松口：把玩家往最近的深水拖（见 Game.dragToWater）。
+                 伤害压得低，它靠的是"把你拖进慢速区"而不是一口咬死。 */
+              this.dragToWater(e);
+            }
           }
         } else if (e.subState === 3) {
           e.subT -= dt;
@@ -1856,6 +3012,31 @@
         } else {
           e.blockT -= dt * 1.5;
           if (e.blockT < 0) e.blockT = 0;
+        }
+      }
+      /* 死胡同看门狗：车堆用几块旋转矩形拼出来，难免夹出比身体还窄的口袋。
+         局部寻路对"进去了才发现封死"的坑无解，所以给它一条和楼顶一样的出路：
+         卡够 2.5 秒就挪到附近最近的一块空地（约 22~46px）。
+         只在离玩家较远时做，玩家看不见"瞬移"，只会看到它从车堆另一头钻出来。 */
+      if (e.uT > 0) e.uT -= dt;
+      if (!e.boss && !e.roof && !e.def.ranged) {
+        var pdNow = U.dist(e.x, e.y, p.x, p.y);
+        if (e.blockT > 2.5 && e.navT <= 0 && pdNow > 70) {
+          unstick(e, p, run);
+        } else if (pdNow > 70) {
+          /* 第二种卡法：一直在动（被同伴挤得左右晃），但**离玩家越来越远**。
+             只在"看不见玩家"（中间挡着东西）时才判，否则玩家自己跑远了也会被误伤 */
+          if (e.progBest === undefined || pdNow < e.progBest - 8) {
+            e.progBest = pdNow; e.progT = 0;
+          } else {
+            e.progT = (e.progT || 0) + dt;
+            if (e.progT > 4 && segBlocked(e.x, e.y, p.x, p.y)) {
+              e.progT = 0;
+              unstick(e, p, run);
+            }
+          }
+        } else {
+          e.progBest = undefined; e.progT = 0;
         }
       }
 
@@ -1971,7 +3152,7 @@
       HS.Audio.pickup();
     } else if (dr.kind === 'chest') {
       var cards = this.lootCards();
-      /* 主武器会走确认（问玩家要不要换掉手里这把），其它直接生效 */
+      /* 空投箱里翻到的卡也先问一句（和搜刮同一个弹窗），玩家点头才生效 */
       if (!this.giveLoot(cards[0], '空投')) HS.Audio.win();
     }
   };
@@ -2063,21 +3244,38 @@
         pool.tick -= 0.25;
         for (var j = 0; j < run.enemies.length; j++) {
           var e = run.enemies[j];
-          if (e.dead) continue;
+          /* 地面火池 / 毒雾池同样摸不到水面以下的水鬼。
+             （爆炸不算池子，那条路径会先把它震出水面） */
+          if (e.dead || e.submerged) continue;
           if (U.dist2(e.x, e.y, pool.x, pool.y) < (pool.r + e.r) * (pool.r + e.r)) {
-            if (pool.dps > 0) this.hurtEnemy(e, pool.dps * 0.25, { silent: true, tag: 'fire', dot: 1, ignoreArmor: 1 });
+            /* tag 跟着池子走：火焰用 fire，钻核（便携钻头进化）用 melee */
+            if (pool.dps > 0) this.hurtEnemy(e, pool.dps * 0.25, { silent: true, tag: pool.tag || 'fire', dot: 1, ignoreArmor: 1 });
+            /* 站在火海里就会被点着 —— 走开以后还要烧一小段。
+               以前只有"池内按 tick 扣血"，离开火池火就凭空灭了，
+               燃烧瓶看着像一摊会掉血的油漆，而不是火。 */
+            if (pool.fire) this.ignite(e, pool.dps * 1.1, 1.8);
             if (pool.slow) {
               e.slow = Math.max(e.slow || 0, Math.min(0.8, pool.slow));
               e.slowT = Math.max(e.slowT || 0, 0.6);
             }
           }
         }
-        if (Math.random() < 0.4) {
+        if (Math.random() < 0.4 && !pool.core) {
           run.fx.push({
             kind: 'p', x: pool.x + U.rand(-pool.r, pool.r) * 0.7,
             y: pool.y + U.rand(-pool.r, pool.r) * 0.7,
             vx: U.rand(-8, 8), vy: U.rand(-30, -12),
             life: 0.4, max: 0.4, color: Math.random() < 0.5 ? '#ff8b3d' : '#ffd166', size: 1.6
+          });
+        }
+        /* 钻核：不吃火苗，改甩钢灰色的碎屑 */
+        if (pool.core && run.fx.length < 200) {
+          var ca2 = Math.random() * U.TAU;
+          run.fx.push({
+            kind: 'p', x: pool.x + U.rand(-pool.r, pool.r) * 0.7,
+            y: pool.y + U.rand(-pool.r, pool.r) * 0.7,
+            vx: Math.cos(ca2) * U.rand(20, 60), vy: Math.sin(ca2) * U.rand(20, 60) - 14,
+            life: 0.22, max: 0.22, color: Math.random() < 0.5 ? '#e6edf5' : '#9aa6b4', size: 1.4
           });
         }
       }

@@ -40,7 +40,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 /* 全自动开局：把所有地图解锁，免得截图时还要先通关一次 */
 const unlockAll = `(function () {
-  HS.Save.data.unlockedMaps = ['highway', 'night', 'desert', 'flood'];
+  HS.Save.data.unlockedMaps = ['highway', 'night', 'desert', 'flood', 'tunnel'];
   HS.Save.data.gold = 460;
   HS.Save.data.chars = HS.Save.data.chars || [];
   return true;
@@ -63,28 +63,42 @@ const surround = types => `(function () {
 const STEPS = [
   {
     name: 'title',
-    desc: '标题页：主视觉 + 两个入口',
+    desc: '标题页：主视觉 + 研究所 / 排行榜 / 设置',
     act: null,
     wait: 900
   },
   {
     name: 'mapselect',
-    desc: '选图页：四张地图按通关顺序解锁',
+    desc: '选图页：五张地图按通关顺序解锁',
     act: `HS.Game.activate('start')`,
     wait: 500
   },
   {
     name: 'run',
     desc: '末世街区：局内，尸群围上来、主武器自动开火',
-    act: `HS.Game.startRun('highway', 'soldier')`,
+    act: `HS.Game.startRun('highway', 'whale')`,
     wait: 6000,
     fill: surround(['walker', 'walker', 'runner', 'brute', 'vomiter']),
     settle: 1300
   },
   {
+    name: 'cheer',
+    desc: '搜刮成功：鲸鱼娘换开心脸原地蹦一下（默认是严肃脸）',
+    act: `HS.Game.startRun('highway', 'whale')`,
+    wait: 4200,
+    fill: `(function () {
+      var G = HS.Game, p = G.run.p;
+      G.state = 'run';
+      G.run.enemies.length = 0;
+      p.cheerT = p.cheerMax * 0.62;      // 停在半空，截到"跳起来"的那一帧
+      return 'cheer';
+    })()`,
+    settle: 60
+  },
+  {
     name: 'execute',
     desc: '处决：血线以下的敌人一命中就当场斩杀',
-    act: `HS.Game.startRun('highway', 'soldier')`,
+    act: `HS.Game.startRun('highway', 'whale')`,
     wait: 5200,
     fill: `(function () {
       var G = HS.Game, p = G.run.p;
@@ -112,7 +126,7 @@ const STEPS = [
   {
     name: 'railorb',
     desc: '电磁轨道球：过载放电拉出电弧，贴脸的怪也照打',
-    act: `HS.Game.startRun('highway', 'soldier')`,
+    act: `HS.Game.startRun('highway', 'whale')`,
     wait: 5200,
     fill: `(function () {
       var G = HS.Game, p = G.run.p, i;
@@ -141,7 +155,7 @@ const STEPS = [
     desc: '升级三选一：卡面 + 底部重抽',
     act: `(function () {
       var G = HS.Game;
-      G.startRun('highway', 'soldier');   // 单独出这一张时也要先建局面
+      G.startRun('highway', 'whale');   // 单独出这一张时也要先建局面
       G.state = 'run';
       G.gainXp(70);
       return G.state;
@@ -153,7 +167,7 @@ const STEPS = [
     desc: 'Boss 入场：顶部血条、精英杂兵、爆炸特效',
     act: `(function () {
       var G = HS.Game, guard = 0;
-      if (!G.run) G.startRun('highway', 'soldier');   // 单独出这一张时先开局
+      if (!G.run) G.startRun('highway', 'whale');   // 单独出这一张时先开局
       while (G.state === 'levelup' && guard++ < 20) {
         G.pickChoice(0);
         if (G.confirm) G.confirmSwap(true);
@@ -178,7 +192,7 @@ const STEPS = [
     desc: '结算页：存活时间 / 击杀 / 等级 / 搜刮 + 通关奖励',
     act: `(function () {
       var G = HS.Game;
-      if (!G.run) G.startRun('highway', 'soldier');
+      if (!G.run) G.startRun('highway', 'whale');
       G.run.t = 347;
       G.run.kills = 612; G.run.eliteKills = 7; G.run.looted = 11; G.run.gold = 58;
       G.run.p.level = 24;
@@ -265,7 +279,7 @@ const STEPS = [
   {
     name: 'launcher',
     desc: '榴弹发射器：从枪口打出去（后坐 + 枪口焰），不再做投掷动作',
-    act: `HS.Game.startRun('highway', 'soldier')`,
+    act: `HS.Game.startRun('highway', 'whale')`,
     wait: 5200,
     fill: `(function () {
       var G = HS.Game, p = G.run.p;
@@ -425,8 +439,328 @@ const STEPS = [
     settle: 60
   },
   {
+    name: 'tunnel',
+    desc: '公路隧道：双侧连续衬砌 + 顶灯光池 + 自爆尸',
+    act: `HS.Game.startRun('tunnel', 'whale')`,
+    wait: 5000,
+    fill: `(function () {
+      var G = HS.Game, p = G.run.p, i;
+      G.state = 'run';
+      for (i = 0; i < 6; i++) {
+        G.spawnEnemy('bomber', false, p.x + (i % 2 ? 1 : -1) * (34 + i * 16), p.y - 40 - i * 20);
+      }
+      for (i = 0; i < 5; i++) {
+        G.spawnEnemy('walker', false, p.x + (i % 2 ? 1 : -1) * (26 + i * 14), p.y + 46 + i * 16);
+      }
+      var v = G.spawnEnemy('vomiter', false, p.x - 62, p.y - 96);
+      v.speed = 0;
+      return G.run.map.id;
+    })()`,
+    settle: 900
+  },
+  {
+    name: 'rings',
+    desc: '冰霜环（蓝 + 冰晶）与火焰环（橙 + 火星）分家后的对比',
+    act: `(function () {
+      var G = HS.Game;
+      G.startRun('highway', 'whale');
+      G.state = 'run';
+      G.run.vehHint = true; G.bannerT = 0; G.run.eventT = 999;
+      var p = G.run.p;
+      p.invuln = 1e9; p.hp = p.maxHp;
+      HS.Gear.clearHands(p);
+      p.weapons.length = 0; p.autos.length = 0;
+      p.autos.push({ id: 'frostring', lvl: 1, up: {} });
+      p.autos.push({ id: 'firering', lvl: 1, up: {} });
+      G.recalc(p);
+      G.run.enemies.length = 0;
+      for (var i = 0; i < 10; i++) {
+        var a = i / 10 * Math.PI * 2;
+        var e = G.spawnEnemy('walker', false, p.x + Math.cos(a) * 64, p.y + Math.sin(a) * 64);
+        e.speed = 0;
+        e.hp = e.maxHp;
+      }
+      return 'rings';
+    })()`,
+    wait: 700,
+    settle: 300
+  },
+  {
+    name: 'meltbeam',
+    desc: '熔核过载（红莲进化）：光束烧到发白，穿透整排并叠熔核',
+    act: `(function () {
+      var G = HS.Game;
+      G.startRun('highway', 'whale');
+      G.state = 'run';
+      var p = G.run.p;
+      p.invuln = 1e9;
+      p.weapons.length = 0;
+      p.weapons.push({ id: 'redlaser_x', lvl: 1, up: {}, slot: 'main', timer: 0 });
+      p.autos.length = 0;
+      G.recalc(p);
+      G.run.enemies.length = 0;
+      G.run.eventT = 999;
+      /* 一排怪，让"穿透整排"看得见 */
+      for (var i = 0; i < 5; i++) {
+        var e = G.spawnEnemy('walker', false, p.x + 46 + i * 26, p.y - 4 + i * 2);
+        e.speed = 0; e.maxHp = 9999; e.hp = 9999;
+      }
+      /* 手动推进到"刚放出一跳" */
+      for (var k = 0; k < 25; k++) {
+        G.run.t = 20 + k * 0.08;
+        G.updateWeapons(1 / 60);
+      }
+      /* 持续光束现在是一条常驻的激光（p.beamHold，见 render 的 drawBeamHold），
+         不再靠 run.chains 里 0.12s 的闪线，所以这里不需要延长任何东西 */
+      return 'melt beamHold=' + (p.beamHold ? p.beamHold.life.toFixed(2) : 'null') +
+        ' w=' + (p.beamHold ? p.beamHold.w : '-');
+    })()`,
+    wait: 16
+  },
+  {
+    name: 'axecrack',
+    desc: '断堤巨斧交叉斩：地上留的是沿斧刃划过的弧裂纹',
+    act: `(function () {
+      var G = HS.Game;
+      G.startRun('flood', 'whale');
+      G.state = 'run';
+      var p = G.run.p;
+      p.invuln = 1e9;
+      G.run.enemies.length = 0;
+      G.run.eventT = 999;
+      var b = G.spawnEnemy('axeboss', false, p.x + 90, p.y + 6);
+      /* spawnEnemy 不打 boss 标记，不打的话 BOSS 状态机整个不跑 */
+      b.boss = true;
+      b.aSt = 1; b.aT = 0.02; b.aAim = Math.PI; b.aCleaveCd = 9; b.aLeapCd = 99;
+      for (var i = 0; i < 4; i++) G.updateEnemies(1 / 60);
+      b.aSt = 0; b.aCleaveCd = 99; b.aLeapCd = 99; b.speed = 0;
+      return 'crack';
+    })()`,
+    wait: 260
+  },
+  {
+    name: 'evocard',
+    desc: '升级三选一里的进化卡：炫彩流动边框',
+    act: `(function () {
+      var G = HS.Game, D = HS.Data;
+      G.startRun('highway', 'whale');
+      G.state = 'run';
+      var p = G.run.p;
+      p.weapons.length = 0;
+      p.weapons.push({ id: 'smg', lvl: 5, up: {}, slot: 'main', timer: 0 });
+      p.autos.length = 0;
+      G.recalc(p);
+      var edef = D.gear.smg_x, bdef = D.gear.smg;
+      G.run.choices = [
+        { kind: 'evolve', id: 'smg_x', baseId: 'smg', name: edef.name,
+          sub: '进化 · ' + bdef.name, icon: edef.icon || 'smg', color: edef.color || '#ff9f43',
+          desc: edef.desc, rare: true, src: '进化' },
+        { kind: 'passive', id: 'haste', name: '快速换弹', sub: '攻速 +10%',
+          icon: 'haste', color: '#7ee8fa', desc: '攻击间隔再缩短一档', rare: false },
+        { kind: 'gearLevel', id: 'smg', name: '脉冲冲锋枪 Lv.4', sub: '武器专属',
+          icon: 'smg', color: '#ff9f43', desc: '这把枪伤害 +16%', rare: false }
+      ];
+      G.state = 'levelup';
+      G.uiT = 2.2;
+      return 'evolve';
+    })()`,
+    wait: 500
+  },
+  {
+    name: 'drownerguard',
+    desc: '水鬼出水保护：身上那层淡青水膜就是"现在打不中"的信号',
+    act: `(function () {
+      var G = HS.Game;
+      G.startRun('flood', 'whale');
+      G.state = 'run';
+      var p = G.run.p;
+      p.invuln = 1e9; p.hp = p.maxHp;
+      G.run.enemies.length = 0;
+      G.run.eventT = 999;
+      var e = G.spawnEnemy('drowner', false, p.x + 30, p.y + 4);
+      e.x = p.x + 30; e.y = p.y + 4; e.speed = 0;
+      /* 直接摆成"刚浮出水面"：subAng 必须自己补，否则 atan2(NaN) 会让它消失 */
+      e.subState = 2; e.submerged = true; e.subT = 0.001; e.subAng = Math.PI;
+      return 'emerge';
+    })()`,
+    wait: 55
+  },
+  {
+    name: 'ringcards',
+    desc: '三选一里两件环的卡面：冰霜环走冷蓝 + 环形冰晶，火焰环走橙 + 环形火',
+    act: `(function () {
+      var G = HS.Game;
+      G.startRun('highway', 'whale');
+      G.state = 'levelup';
+      /* 卡面直接指定，不然随机池里两件环很难同时抽到 */
+      G.run.choices = [
+        G.makeCard({ kind: 'autoNew', id: 'frostring' }),
+        G.makeCard({ kind: 'autoNew', id: 'firering' }),
+        G.makeCard({ kind: 'synergy', id: 'ringIce' })
+      ];
+      return 'cards=' + G.run.choices.length;
+    })()`,
+    wait: 800
+  },
+  {
+    name: 'tunnelcrash',
+    desc: '连环追尾：多辆车挤成一团，刹车痕、碎玻璃、干涸的血',
+    act: `(function () {
+      var G = HS.Game;
+      G.startRun('tunnel', 'whale');
+      G.state = 'run';
+      G.run.vehHint = true; G.bannerT = 0; G.run.eventT = 999; G.run.supplyDropped = true;
+      var p = G.run.p;
+      p.invuln = 90; p.hp = p.maxHp;
+      /* 站到第 2 处事故点的下游：车堆在屏幕上半，玩家在下面看着它 */
+      var ay = HS.World.accidentY(1);
+      p.x = 6; p.y = ay + 156;
+      for (var i = 0; i < 4; i++) G.spawnEnemy('walker', false, (i - 1.5) * 26, p.y - 20 - i * 12);
+      return 'y=' + Math.round(ay);
+    })()`,
+    wait: 400,
+    settle: 500
+  },
+  {
+    name: 'tunnelbomber',
+    desc: '自爆尸：肚囊荧光，残血时脉冲更急',
+    act: `(function () {
+      var G = HS.Game;
+      G.startRun('tunnel', 'whale');
+      G.state = 'run';
+      G.run.vehHint = true; G.bannerT = 0;
+      var p = G.run.p;
+      p.invuln = 90; p.hp = p.maxHp;
+      for (var i = 0; i < 6; i++) {
+        var b = G.spawnEnemy('bomber', false, p.x + (i % 3 - 1) * 44, p.y - 66 - Math.floor(i / 3) * 36);
+        /* 前一排是快被打炸的（脉冲急），后一排还满血 —— 一张图看出两种状态 */
+        b.hp = b.maxHp * (i < 3 ? 0.3 : 0.95);
+        b.speed = 6;
+      }
+      return 'bombers';
+    })()`,
+    wait: 120,
+    settle: 150
+  },
+  {
+    name: 'tunnelsonic',
+    desc: '尖啸者：全向蓄声（射程环 + 收束的声压环）',
+    act: `(function () {
+      var G = HS.Game, guard = 0;
+      G.startRun('tunnel', 'whale');
+      while (G.state === 'levelup' && guard++ < 20) {
+        G.pickChoice(0);
+        if (G.confirm) G.confirmSwap(true);
+      }
+      G.state = 'run';
+      G.run.t = 356;
+      /* 别让教学横幅 / 局内事件横幅压在 Boss 脸上 */
+      G.run.vehHint = true; G.bannerT = 0; G.run.eventT = 999;
+      G.run.supplyDropped = true;   // t=356 会触发"最后的补给"横幅，出图前先划掉
+      G.spawnBoss();
+      G.bannerT = 0;            // 「双首领同时出现」的横幅会压在第一只脸上
+      var p = G.run.p;
+      p.invuln = 90; p.hp = p.maxHp;
+      var sk = G.run.bosses[0], br = G.run.bosses[1];
+      if (sk) {
+        sk.x = p.x + 6; sk.y = p.y - 128;
+        sk.hSt = 1; sk.hT = 0.46; sk.hAng = Math.atan2(p.y - sk.y, p.x - sk.x);
+      }
+      if (br) { br.x = p.x - 14; br.y = p.y + 150; br.bSt = 1; br.bT = 0.55; }
+      return G.run.bosses.length + ' bosses';
+    })()`,
+    wait: 20,
+    settle: 20
+  },
+  {
+    name: 'tunnelscream',
+    desc: '尖啸者长啸：一圈圈声压，人在原地被锁住',
+    act: `(function () {
+      var G = HS.Game;
+      G.startRun('tunnel', 'whale');
+      G.state = 'run';
+      G.run.vehHint = true; G.bannerT = 0; G.run.eventT = 999; G.run.supplyDropped = true;
+      G.run.t = 356;
+      G.spawnBoss();
+      G.bannerT = 0;
+      var p = G.run.p;
+      p.invuln = 90; p.hp = p.maxHp;
+      var sk = G.run.bosses[0], br = G.run.bosses[1];
+      if (sk) {
+        sk.x = p.x; sk.y = p.y - 118;
+        sk.hSt = 5; sk.hT = 0; sk.hChanT = 2.4; sk.hChanTick = 0.32;
+      }
+      if (br) { br.x = p.x + 54; br.y = p.y + 150; br.bSpawnCd = 99; br.bSlamCd = 99; }
+      p.stun = 0.5; p.stunMax = 0.5;
+      for (var i = 0; i < 5; i++) G.spawnEnemy('walker', false, p.x + (i % 3 - 1) * 32, p.y - 54 - (i >> 2) * 26);
+      return 'scream';
+    })()`,
+    wait: 220,
+    settle: 160
+  },
+  {
+    name: 'tunnelthrow',
+    desc: '育母抓起身边的自爆尸，朝玩家扔出去',
+    act: `(function () {
+      var G = HS.Game;
+      G.startRun('tunnel', 'whale');
+      G.state = 'run';
+      G.run.vehHint = true; G.bannerT = 0; G.run.eventT = 999; G.run.supplyDropped = true;
+      G.run.t = 356;
+      G.spawnBoss();
+      G.bannerT = 0;
+      var p = G.run.p;
+      p.invuln = 90; p.hp = p.maxHp;
+      var sk = G.run.bosses[0], br = G.run.bosses[1];
+      if (sk) { sk.x = p.x - 60; sk.y = p.y - 130; sk.hSonicCd = 20; sk.hChanCd = 20; }
+      var bomb = null;
+      if (br) {
+        br.x = p.x + 10; br.y = p.y - 150;
+        br.bSpawnCd = 99; br.bSlamCd = 99; br.bSt = 6; br.bT = 0.35; br.bThrowCd = 99;
+        bomb = G.spawnEnemy('bomber', false, br.x + 6, br.y + 10);
+        bomb.hurlT = 0.26; bomb.hurlDur = 0.6;
+        bomb.hurlX = br.x + 6; bomb.hurlY = br.y + 10;
+        bomb.hurlX2 = p.x; bomb.hurlY2 = p.y;
+        bomb.hurlArc = 52; bomb.hurlSpin = 1.2;
+      }
+      return bomb ? 'throw' : 'no-brood';
+    })()`,
+    wait: 140,
+    settle: 60
+  },
+  {
+    name: 'tunnelboss',
+    desc: '双首领：尖啸者在上、育母在下，中间的走廊就是战场',
+    act: `(function () {
+      var G = HS.Game, guard = 0;
+      G.startRun('tunnel', 'whale');
+      while (G.state === 'levelup' && guard++ < 20) {
+        G.pickChoice(0);
+        if (G.confirm) G.confirmSwap(true);
+      }
+      G.state = 'run';
+      G.run.t = 356;
+      /* 别让教学横幅 / 局内事件横幅压在 Boss 脸上 */
+      G.run.vehHint = true; G.bannerT = 0; G.run.eventT = 999;
+      G.run.supplyDropped = true;   // t=356 会触发"最后的补给"横幅，出图前先划掉
+      G.spawnBoss();
+      G.bannerT = 0;            // 「双首领同时出现」的横幅会压在第一只脸上
+      var p = G.run.p;
+      p.invuln = 90; p.hp = p.maxHp;
+      var sk = G.run.bosses[0], br = G.run.bosses[1];
+      if (sk) { sk.x = p.x - 44; sk.y = p.y - 112; sk.hSonicCd = 9; }
+      if (br) { br.x = p.x + 52; br.y = p.y + 126; br.bSpawnCd = 9; br.bSlamCd = 9; }
+      for (var i = 0; i < 8; i++) {
+        G.spawnEnemy('bomber', false, p.x + (i % 2 ? 1 : -1) * (24 + i * 12), p.y + 150 + (i % 3) * 22);
+      }
+      return G.run.bosses.map(function (b) { return b.def.name; }).join('+');
+    })()`,
+    wait: 60,
+    settle: 500
+  },
+  {
     name: 'meta',
-    desc: '研究所：金币买永久强化、解锁角色',
+    desc: '研究所：鲸鱼娘立绘（原图裁切）+ 永久强化',
     act: `(function () {
       HS.Game.state = 'title';
       HS.Game.activate('meta');

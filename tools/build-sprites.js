@@ -14,6 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { encodePNG } = require('./png');
+const { readPNG } = require('./imgread');
 
 const ROOT = path.resolve(__dirname, '..');
 const OUT_DIR = path.join(ROOT, 'assets');
@@ -88,6 +89,40 @@ function legTop(def) {
   return -1;
 }
 
+/* ---------------- 位图帧 ----------------
+ * 主角这类「原图直接进图集」的帧：从 data.bitmaps 声明的 PNG 里切一格贴进来，
+ * 不经过字符点阵。px 同样只是绘制缩放（px:2 → 世界尺寸减半）。
+ */
+const bmpCache = {};
+function loadBmp(name) {
+  if (bmpCache[name]) return bmpCache[name];
+  const bm = data.bitmaps && data.bitmaps[name];
+  if (!bm) throw new Error('未声明的位图: ' + name);
+  const im = readPNG(path.join(ROOT, bm.file));
+  bmpCache[name] = im;
+  return im;
+}
+
+/** 位图帧的腿部起始行：从底往上扫，能被透明列分成 2 段以上的行就是腿 */
+function bmpLegTop(im, ox, oy, w, h) {
+  const opaque = (x, y) => {
+    const i = ((oy + y) * im.w + (ox + x)) * 4;
+    return im.data[i + 3] > 8;
+  };
+  let lowest = -1;
+  for (let y = h - 1; y >= 0; y--) {
+    let segs = 0, inSeg = false;
+    for (let x = 0; x < w; x++) {
+      const s = opaque(x, y);
+      if (s && !inSeg) { segs++; inSeg = true; }
+      else if (!s) inSeg = false;
+    }
+    if (segs >= 2) lowest = y;
+    else if (lowest >= 0) return lowest;
+  }
+  return -1;
+}
+
 /* ---------------- 烘焙 ---------------- */
 
 const frames = {};
@@ -96,6 +131,32 @@ for (let idx = 0; idx < list.length; idx++) {
   const item = list[idx];
   const cx = margin + (idx % cols) * cellW;
   const cy = margin + Math.floor(idx / cols) * cellH;
+
+  /* 位图帧 */
+  if (item.bmp) {
+    const bm = data.bitmaps[item.bmp];
+    const im = loadBmp(item.bmp);
+    const sx = (item.bi || 0) * bm.w;
+    const ox = cx + Math.floor((cellW - bm.w) / 2);
+    const oy = cy + Math.floor((cellH - bm.h) / 2);
+    for (let y = 0; y < bm.h; y++) {
+      for (let x = 0; x < bm.w; x++) {
+        const i = (y * im.w + (sx + x)) * 4;
+        const a = im.data[i + 3];
+        if (a < 8) continue;
+        put(ox + x, oy + y, [im.data[i], im.data[i + 1], im.data[i + 2]], a);
+      }
+    }
+    const fr = { x: ox, y: oy, w: bm.w, h: bm.h };
+    if (bm.px && bm.px !== 1) fr.s = 1 / bm.px;
+    /* legs:false 的位图自己就是一整套姿势帧，不交给 drawActor 切片补间 */
+    if (bm.legs !== false) {
+      const legRow = bmpLegTop(im, sx, 0, bm.w, bm.h);
+      if (legRow > 0) fr.lr = legRow;
+    }
+    frames[item.name] = fr;
+    continue;
+  }
 
   /* 道具帧：用绘制函数直接写像素 */
   if (item.prop) {
@@ -160,6 +221,8 @@ const sheet = {
   image: 'assets/sprites.png',
   size: { w: sheetW, h: sheetH },
   meta: meta,
+  /* 立绘（研究所角色页）：不进图集，运行时单独加载，按原图逻辑分辨率 1:1 显示 */
+  portrait: data.portrait || '',
   frames: frames
 };
 

@@ -67,10 +67,12 @@
     },
     chainbolt: {
       id: 'chainbolt', name: '连锁闪电', icon: 'tesla', color: '#a8f3ff', maxLvl: 3,
-      cat: '弹道', apply: '全部武器 · 按开火次数蓄能',
+      /* 闸门是全局的（CHAIN_GAP）：高频武器不会因为射速高就放电更快，
+         所以描述里必须写明"最快多久一道"，否则玩家会按射速去估收益 */
+      cat: '弹道', apply: '全部武器 · 最快每 0.45 秒一道',
       desc: function (l) {
-        return '每 ' + HS.Data.chainNeed(l) + ' 次开火放出一道连锁闪电，跳 ' + (2 + l) +
-          ' 个目标（每跳 ' + Math.round((40 + 20 * l)) + '% 武器伤害）';
+        return '每 ' + HS.Data.chainNeed(l) + ' 次开火放一道连锁闪电，跳 ' + (2 + l) +
+          ' 个目标（每跳 ' + Math.round((40 + 20 * l)) + '% 伤害）；最快每 0.45 秒一道';
       }
     },
     homing: {
@@ -114,6 +116,20 @@
       id: 'steam', name: '霜火反应', icon: 'ring', color: '#cfefff', maxLvl: 3,
       cat: '元素', apply: '冰火同持', needs: 'both',
       desc: function (l) { return '冰打燃烧目标时爆一次，附带 ' + (l * 60) + '% 燃烧伤害'; }
+    },
+
+    /* ---------------- 近战 ----------------
+     * 「刃返」是近战唯一的"防远程"手段，但它是**可选稀有卡**，不是白送：
+     * 清弹等于把远程敌人的整条威胁线抹掉，近战不该天生免疫这一套。
+     * 想要它，就得占掉一次升级（还得先手握近战武器，needs 会挡）。 */
+    bladeguard: {
+      id: 'bladeguard', name: '刃返', icon: 'blades', color: '#a8e6ff', maxLvl: 2,
+      cat: '近战', apply: '近战 / 反远程', needs: 'melee', rare: true,
+      desc: function (l) {
+        return l <= 1
+          ? '近战挥砍 / 突刺时击落身边的敌方子弹'
+          : '击落范围扩大，被击落的弹丸炸成碎光';
+      }
     },
 
     /* ---------------- 伤害 ---------------- */
@@ -237,7 +253,7 @@
   /** 通用属性池（不含防护装备） */
   HS.Data.passivePool = [
     'power', 'crit', 'critdmg',
-    'burnDmg', 'chill', 'steam', 'pierceArmor', 'execute',
+    'burnDmg', 'chill', 'steam', 'pierceArmor', 'execute', 'bladeguard',
     'haste', 'cdr', 'projCount',
     'pierce', 'split', 'bounce', 'chainbolt', 'homing',
     'range', 'blast', 'duration',

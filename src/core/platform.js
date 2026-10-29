@@ -26,12 +26,37 @@
       fill: noop, stroke: noop, clip: noop,
       fillRect: noop, strokeRect: noop, clearRect: noop,
       drawImage: noop, fillText: noop, strokeText: noop,
-      measureText: function (t) { return { width: (t ? String(t).length : 0) * 6 }; },
+      measureText: function (t) {
+        /* 桩里的字宽要**跟字号走**，而且中文按 1 个字号算：
+           以前固定「字数 × 6」，等于把 24px 的标题和 10px 的说明量成一样宽，
+           wrap2 在无头测试里会以为长中文句子一行放得下（真实 canvas 会折行），
+           排版自检于是既测不出越界、也测不出折行。口径和 check-cardtext 一致。 */
+        var s = t ? String(t) : '';
+        var m = /(\d+(?:\.\d+)?)px/.exec(this.font || '');
+        var px = m ? parseFloat(m[1]) : 10;
+        var w = 0;
+        for (var i = 0; i < s.length; i++) {
+          var c = s.charCodeAt(i);
+          var wide = (c >= 0x2e80 && c <= 0x9fff) || (c >= 0xff00 && c <= 0xff60) ||
+            (c >= 0x3000 && c <= 0x303f);
+          w += wide ? px : px * 0.55;
+        }
+        return { width: w };
+      },
       createLinearGradient: function () { return { addColorStop: noop }; },
       createRadialGradient: function () { return { addColorStop: noop }; },
       createPattern: function () { return null; },
       putImageData: noop,
       getImageData: function () { return { data: [] }; },
+      /* 隧道的照明图是先 createImageData 再逐像素写、最后 putImageData 盖上去的
+         （见 render 的 drawTunnelLamps）。桩里少了这个，balance / smoke 这类
+         无头跑到隧道图就会 TypeError —— 真实数据和 drawImage 都已经不吃它，
+         但**方法必须存在**。 */
+      createImageData: function (w, h) {
+        var ww = Math.max(1, Math.floor(w || 1));
+        var hh = Math.max(1, Math.floor(h || 1));
+        return { width: ww, height: hh, data: new Uint8ClampedArray(ww * hh * 4) };
+      },
       setLineDash: noop,
       fillStyle: '#000', strokeStyle: '#000', lineWidth: 1, globalAlpha: 1,
       font: '10px sans-serif', textAlign: 'left', textBaseline: 'top',
@@ -213,6 +238,14 @@
 
     vibrate: function (type) {
       if (!P.vibrateOn) return;
+      /* 连着挨打的时候别一直嗡：单次最短间隔 90ms，0.4 秒内再来就按"连击"算、
+         把间隔拉到 260ms。自爆尸一串连环炸时，每一下都掉血、每一下都震，
+         手机会变成一直在抖（和震屏一样是"频繁"的问题）。
+         只丢多余的震动，不改任何伤害与判定。 */
+      var now = Date.now();
+      var gap = now - (P._vibT || 0);
+      if (gap < (gap < 400 ? 260 : 90)) return;
+      P._vibT = now;
       try {
         if (P.isWx && wx.vibrateShort) wx.vibrateShort({ type: type || 'light' });
       } catch (e) {}

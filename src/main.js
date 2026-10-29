@@ -38,6 +38,7 @@
             var g = HS.Game;
             if (g.state === 'run') { g.state = 'paused'; HS.Input.enabled = false; }
             HS.Audio.pauseBgm();
+            HS.Audio.beamOff();     // 切后台时红莲的嗡鸣立刻收掉（别在后台一直响）
             HS.Host.fireHide();
           });
         }
@@ -49,9 +50,12 @@
       } else if (!P.isNode && typeof document !== 'undefined') {
         /* 浏览器 / B站 Toy：切标签页、切后台、页面卸载都要落盘 */
         document.addEventListener('visibilitychange', function () {
-          if (document.visibilityState === 'hidden') HS.Host.fireHide();
+          if (document.visibilityState === 'hidden') {
+            HS.Audio.beamOff();     // 切走的标签页里不该还在嗡嗡响
+            HS.Host.fireHide();
+          }
         });
-        window.addEventListener('pagehide', function () { HS.Host.fireHide(); });
+        window.addEventListener('pagehide', function () { HS.Audio.beamOff(); HS.Host.fireHide(); });
         window.addEventListener('beforeunload', function () { HS.Host.fireHide(); });
       }
 
@@ -66,8 +70,16 @@
             if (e.key === 'Escape') g.answerLoot(false);
             else if (e.key === 'Enter' || e.key === '1') g.answerLoot(true);
           } else if (e.key === 'Escape') {
-            if (g.state === 'run') { g.state = 'paused'; HS.Input.enabled = false; }
-            else if (g.state === 'paused') { g.state = 'run'; HS.Input.enabled = true; }
+            if (g.state === 'run') {
+              g.state = 'paused';
+              g.pauseSet = false;
+              HS.Input.enabled = false;
+            } else if (g.state === 'paused') {
+              /* 在暂停的设置页里按 Esc：先退回暂停菜单，再按一次才继续 */
+              if (g.pauseSet) { g.pauseSet = false; HS.Audio.ui(); return; }
+              g.state = 'run';
+              HS.Input.enabled = true;
+            }
           }
         });
       }

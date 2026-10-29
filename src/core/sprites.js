@@ -5,10 +5,13 @@
  * 帧表由 tools/build-sprites.js 生成（assets/sprites.js -> HS.SheetData）。
  *
  * 帧命名：
- *   player_soldier / player_medic / player_mechanic / player_ghost
+ *   player_whale / player_whale_happy   主角（位图帧，来自原图，48x56 px:2）
  *   walker / runner / crawler / spitter / brute / boss
  *   <enemy>_elite   精英红化版本
  *   <enemy>_hit     受击白闪版本
+ *
+ * 另外单独加载一张立绘（HS.SheetData.portrait）：研究所角色页用，
+ * 不进图集 —— 121x161 按 1:1 画出来才是原图的清晰度。
  */
 (function () {
   var G = typeof GameGlobal !== 'undefined' ? GameGlobal
@@ -23,6 +26,8 @@
     frames: null,
     sheetW: 0,
     sheetH: 0,
+    portrait: null,
+    portraitReady: false,
 
     init: function () {
       var d = HS.SheetData;
@@ -39,6 +44,14 @@
         S.img = im;
         S.ready = true;
       });
+
+      if (d.portrait) {
+        P.loadImage(d.portrait, function (im) {
+          if (!im || im.__stub) return;
+          S.portrait = im;
+          S.portraitReady = true;
+        });
+      }
     },
 
     has: function (name) {
@@ -93,6 +106,31 @@
       if (!f) return null;
       var s = (scale || 1) * (f.s || 1);
       return S.draw(ctx, name, x, y - Math.round(f.h * s) / 2, scale || 1, alpha);
+    },
+
+    /**
+     * 立绘：以左上角为锚点，按 1:1 像素画（关闭插值），
+     * 这样 121x161 的原图缩略在 UI 里不会是糊的。
+     */
+    drawPortrait: function (ctx, x, y, w, h) {
+      if (!S.portraitReady) return false;
+      var pw = S.portrait.width || S.portrait.naturalWidth || 121;
+      var ph = S.portrait.height || S.portrait.naturalHeight || 161;
+      w = w || pw;
+      h = h || ph;
+      var prev = ctx.imageSmoothingEnabled;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(S.portrait, Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+      ctx.imageSmoothingEnabled = prev;
+      return true;
+    },
+
+    portraitSize: function () {
+      if (!S.portrait) return { w: 121, h: 161 };
+      return {
+        w: S.portrait.width || S.portrait.naturalWidth || 121,
+        h: S.portrait.height || S.portrait.naturalHeight || 161
+      };
     }
   };
 

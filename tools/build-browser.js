@@ -23,6 +23,8 @@ if (!fs.existsSync(sheetPath)) {
   process.exit(1);
 }
 const sheetB64 = fs.readFileSync(sheetPath).toString('base64');
+/* 立绘不再内联：原图裁切的 121x161 人物图会触发 Toy 包体安检，
+   研究所角色页改成用图集里的像素帧放大显示 */
 const sheetInline = `HS.SheetData.image = 'data:image/png;base64,${sheetB64}';`;
 
 /* 背景音乐同样内联成 data URI：单文件预览不能依赖外部目录，
@@ -272,10 +274,11 @@ try {
   /* 生成一个假的存档，截图时不是全 0 */
   if (q.dummy === '1') {
     var sd = HS.Save.data;
-    sd.gold = 1240; sd.wins = 3; sd.bestTime = 421; sd.bestLevel = 24;
+    sd.gold = 1240; sd.wins = 4; sd.bestTime = 421; sd.bestLevel = 24;
     sd.bestKills = 388; sd.totalKills = 2140; sd.runs = 17;
-    sd.unlockedMaps = ['highway', 'night', 'desert'];
-    sd.chars = ['soldier', 'medic'];
+    /* 五张图全解锁：预览 / 截图时要能直接点到公路隧道 */
+    sd.unlockedMaps = ['highway', 'night', 'desert', 'flood', 'tunnel'];
+    sd.chars = ['whale'];
   }
   /* 截图机位自检：把附近楼房的 reveal 写进标题，方便确认"看到的到底是屋顶还是室内" */
   if (q.dbg && g.run) {

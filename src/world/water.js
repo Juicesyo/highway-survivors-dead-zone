@@ -395,6 +395,55 @@
    * 巨斧砸地：**不是挖出深水**，而是把地面砸烂 —— 裂纹、碎石、扬尘，
    * 通行不受影响（能砸烂的只有路上的车壳）。伤痕会留在 `run.breaks` 里慢慢淡去。
    */
+  /**
+   * 斧刃划过的弧形裂缝。
+   *
+   * 和 breakTerrain 的区别是"读法"：圆坑读起来是**砸**出来的（跃劈砸地），
+   * 而交叉斩是**挥**过去的 —— 地上该留一道顺着刀刃轨迹的弧，不是两个点状坑。
+   * `r` 要传**这一招的判定边界**（不是刀刃的视觉长度，也不是起手距离），
+   * `span` 传判定扇形的总角：玩家站在弧外面就该是安全的，这条弧是他的边界线。
+   */
+  Water.crackArc = function (cx, cy, ang, span, r, run) {
+    if (!run) return;
+    if (!run.breaks) run.breaks = [];
+    /* 同一处反复划只续命、只加长，不叠加 —— 连砍两刀会在原地糊成一团黑。
+       但**必须带上角度**：交叉斩是一次两斧（aAim ± 0.46），
+       圆心和半径完全相同，只按距离判会把两道弧并成一条。 */
+    for (var i = 0; i < run.breaks.length; i++) {
+      var b0 = run.breaks[i];
+      if (!b0.arc) continue;
+      var da = b0.ang - ang;
+      while (da > Math.PI) da -= U.TAU;
+      while (da < -Math.PI) da += U.TAU;
+      if (U.dist(b0.x, b0.y, cx, cy) < 16 && Math.abs(b0.r - r) < 12 &&
+          Math.abs(da) < 0.4) {
+        b0.life = b0.max;
+        b0.span = Math.max(b0.span, span);
+        return;
+      }
+    }
+    run.breaks.push({
+      arc: 1, x: cx, y: cy, ang: ang, span: span, r: r,
+      life: 26, max: 26,
+      seed: U.hash(Math.round(cx), Math.round(cy), 4409)
+    });
+    /* 沿弧线甩碎石：砸是向四周崩，划是顺着刀口往外飞。
+       落点必须和画出来的裂缝**同一条弧**（正圆，不压扁）——
+       碎石飘在裂缝内外两侧会读成两处破坏，边界感就没了。 */
+    for (var k = 0; k < 14; k++) {
+      var t = Math.random();
+      var a = ang - span / 2 + span * t;
+      run.fx.push({
+        kind: 'p',
+        x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r,
+        vx: Math.cos(a) * U.rand(18, 58) + U.rand(-14, 14),
+        vy: -U.rand(8, 44),
+        life: U.rand(0.3, 0.6), max: 0.6,
+        color: k % 3 === 0 ? '#6b5a46' : (k % 3 === 1 ? '#8a7a63' : '#4a4038'), size: 2
+      });
+    }
+  };
+
   Water.breakTerrain = function (x, y, r, run) {
     if (!run) return;
     if (!run.breaks) run.breaks = [];

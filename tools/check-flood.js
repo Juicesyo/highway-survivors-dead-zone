@@ -23,8 +23,8 @@ function check(name, cond, extra) {
 
 console.log('[地图与生成]');
 G.state = 'title';
-G.startRun('flood', 'soldier');
-check('锈水高速是第四关', D.mapOrder.length === 4 && D.mapOrder[3] === 'flood', D.mapOrder.join(','));
+G.startRun('flood', 'whale');
+check('锈水高速是第四关', D.mapOrder[3] === 'flood', D.mapOrder.join(','));
 check('主题为 flood', G.run.map.theme === 'flood');
 check('通关奖励 110', G.run.map.clearGold === 110);
 check('深水形成边界', HS.Water.zone(116, 0, G.run) === 2, HS.Water.zone(116, 0, G.run));
@@ -384,12 +384,264 @@ check('被炸后震出水面', dr.submerged === false && dr.subState === 3,
 G.hurtEnemy(dr, 6, { tag: 'auto' });
 check('浮出后照常吃伤害', dr.hp < hpB, 'hp=' + dr.hp.toFixed(1));
 dr.dead = true;
+
+/* 潜行时长按**距离**给，不是固定的 1.5 秒。
+   1.5 秒只能游 34×1.75×1.5 ≈ 89px，而它从 250px 外就会起潜 ——
+   以前经常"潜到一半自己浮上来"，在半路挨打，玩家看到的是"它凑不到人"。
+   现在一路潜到脚下再出水；出水阈值 18 也小于咬击阈值 18.5（否则贴脸浮出却咬空）。 */
+{
+  const keepX = pp.x, keepY = pp.y, keepInv = pp.invuln;
+  pp.x = -120; pp.y = 0; pp.hp = pp.maxHp; pp.invuln = 0;
+  G.run.enemies.length = 0;
+  let deepX = 60;
+  for (let x = 60; x < 240; x += 2) { if (HS.Water.zone(x, 0, G.run) === 2) { deepX = x; break; } }
+  const far = G.spawnEnemy('drowner', false, deepX, 0);
+  far.x = deepX; far.y = 0; far.subCd = 0;
+  const startD = Math.hypot(far.x - pp.x, far.y - pp.y);
+  let maxSub = 0, bit = false, outDist = -1;
+  for (let i = 0; i < 60 * 20 && !bit; i++) {
+    pp.invuln = 0;
+    const before = pp.hp;
+    G.updateEnemies(1 / 60);
+    pp.invuln = 0; pp.x = -120; pp.y = 0;
+    if (pp.hp < before) bit = true;
+    if (far.submerged) maxSub = Math.max(maxSub, far.subT);
+    else if (far.subState === 3 && outDist < 0) outDist = Math.hypot(far.x - pp.x, far.y - pp.y);
+  }
+  check('潜行时长随距离拉长（不再是固定 1.5 秒）', maxSub > 2,
+    Math.round(startD) + 'px → 潜 ' + maxSub.toFixed(2) + 's');
+  check('从远处能潜到脚下并咬一口', bit, '出水距离 ' + Math.round(outDist) + 'px');
+  check('出水点贴着玩家（<咬击阈值 18.5）', outDist >= 0 && outDist < 18.5,
+    outDist.toFixed(1) + 'px');
+  far.dead = true;
+  pp.x = keepX; pp.y = keepY; pp.invuln = keepInv;
+  G.run.enemies.length = 0;
+}
+
+/* 拖拽：咬中之后把玩家往最近的深水拽。
+   它不靠伤害杀人（一口只有 5 点），靠的是把玩家从干地拖进泥沼 ——
+   深水里只剩三成移速，尸群一围就出不来。玩家**不被缴械**：只是多一股位移，摇杆能对抗。 */
+{
+  pp.x = 0; pp.y = 0; pp.dragT = 0; pp.dragImmune = 0; pp.hp = pp.maxHp; pp.invuln = 1e9;
+  G.run.enemies.length = 0;
+  const okd = G.dragToWater({ x: 20, y: 0 });
+  check('咬中后触发拖拽', okd === true);
+  const dspd = Math.hypot(pp.dragVX, pp.dragVY);
+  check('拖拽速度低于步行速度（干地上跑得掉）', dspd < pp.base.speed * pp.spdMul,
+    '拖 ' + dspd.toFixed(0) + ' < 走 ' + (pp.base.speed * pp.spdMul).toFixed(0));
+  check('拖拽快于深水移速（进了水就出不来）', dspd > pp.base.speed * pp.spdMul * 0.34,
+    '深水 ' + (pp.base.speed * pp.spdMul * 0.34).toFixed(0));
+  check('拖拽不是眩晕（玩家仍能操作、能开枪）', pp.stun === 0 && !pp.dragStun);
+
+  /* 方向必须指向深水；没水的地方（楼顶 / 车里）不拖 */
+  const ux = pp.dragVX / dspd, uy = pp.dragVY / dspd;
+  let towardDeep = false;
+  for (let dd = 20; dd <= 170; dd += 6) {
+    if (HS.Water.zone(pp.x + ux * dd, pp.y + uy * dd, G.run) === 2) { towardDeep = true; break; }
+  }
+  check('拖拽方向指向深水', towardDeep, 'dir=' + ux.toFixed(2) + ',' + uy.toFixed(2));
+
+  pp.dragT = 0;
+  pp.roof = 'r1';
+  check('楼顶上不拖', G.dragToWater({ x: pp.x, y: pp.y }) === false);
+  pp.roof = null;
+  pp.veh = { x: 0, y: 0, hp: 9 };
+  check('车里不拖', G.dragToWater({ x: pp.x, y: pp.y }) === false);
+  pp.veh = null;
+  pp.dragT = 0; pp.dragVX = 0; pp.dragVY = 0;
+}
+
+/* 拖拽不能把玩家一路推到水中央 —— 这是最典型的一类"卡关"：
+   深水里玩家只有三成移速、普通丧尸走不进来、BOSS 也过不来，
+   于是既打不到东西也死不掉，整局卡死在离公路几十米的水面上。
+   两条防护：① 已经在深水里就不再拖；② 松口后有免疫窗口，不许接力拖。 */
+{
+  pp.dragT = 0; pp.dragImmune = 0; pp.invuln = 1e9;
+  pp.x = 0; pp.y = 0;
+  let deepX2 = 60;
+  for (let x = 60; x < 240; x += 2) { if (HS.Water.zone(x, 0, G.run) === 2) { deepX2 = x; break; } }
+
+  /* 站进深水：不该再被拖 */
+  pp.x = deepX2; pp.y = 0; pp.dragT = 0; pp.dragImmune = 0;
+  check('已经在深水里就不再拖（否则会一路推到水中央）',
+    G.dragToWater({ x: deepX2 + 20, y: 0 }) === false, '水深=' + HS.Water.zone(deepX2, 0, G.run));
+
+  /* 免疫窗口：咬完一口后短时间内不会被接力拖 */
+  pp.x = 0; pp.y = 0; pp.dragT = 0; pp.dragImmune = 0;
+  const d1 = G.dragToWater({ x: 20, y: 0 });
+  const d2 = G.dragToWater({ x: 20, y: 0 });
+  check('第一次能拖', d1 === true);
+  check('紧接着的第二口不会叠加拖拽（有免疫）', d2 === false);
+  check('免疫覆盖"拖拽 + 冷却"', pp.dragImmune > 3.5,
+    pp.dragImmune.toFixed(2) + 's');
+
+  /* 最坏情况：12 次机会连续咬，看会被推到多远 */
+  pp.x = 0; pp.y = 0; pp.dragT = 0; pp.dragImmune = 0;
+  for (let bite = 0; bite < 12; bite++) {
+    pp.dragImmune = 0;                 // 假设水鬼每次都等到免疫结束
+    G.dragToWater({ x: pp.x + 20, y: pp.y });
+    for (let i = 0; i < 120; i++) {
+      pp.invuln = 1e9;
+      G.update(1 / 60);
+    }
+  }
+  const away = Math.hypot(pp.x, pp.y);
+  check('连咬 12 次也不会被越拖越远', away < 260, '离公路 ' + Math.round(away) + 'px');
+  /* 关键：拖到深水边缘就顶住，绝不把人推进去 ——
+     深水里玩家 0.30 速、丧尸 0.34，进去就是死局（打不到怪也死不掉） */
+  check('连咬 12 次也不会被拖进深水', HS.Water.zone(pp.x, pp.y, G.run) !== 2,
+    '水深=' + HS.Water.zone(pp.x, pp.y, G.run));
+  pp.dragT = 0; pp.dragVX = 0; pp.dragVY = 0; pp.dragImmune = 0;
+  pp.x = 0; pp.y = 0;
+  G.run.enemies.length = 0;
+}
+
+/* 出水保护（emergeGuard）：浮出水面那一拍打不中，0.35 秒后恢复。
+   它血量只有 26（这张图折算 32），中期玩家一秒能打掉两百 —— 没有这层保护，
+   水鬼辛苦潜过来就是"送经验"：咬完站在脸上必被秒。保护是为了让它能退回去，
+   不是为了变肉（血量一点没动）。 */
+{
+  const g = G.spawnEnemy('drowner', false, 20, 0);
+  g.x = 20; g.y = 0; g.speed = 0;
+  g.subState = 2; g.submerged = true; g.subT = 0.001; g.subAng = Math.PI;
+  G.updateEnemies(1 / 60);
+  check('出水后不再算水下', g.submerged === false);
+  check('出水时进入保护窗口', g.emergeGuard > 0.3, (g.emergeGuard || 0).toFixed(2));
+  const ghp = g.hp;
+  G.hurtEnemy(g, 9999, { noCrit: true });
+  check('保护期内打不死', !g.dead && g.hp === ghp, 'hp=' + Math.round(g.hp));
+  let gf = 0;
+  while (g.emergeGuard > 0 && gf < 120) { G.updateEnemies(1 / 60); gf++; }
+  check('保护窗口约 0.35 秒', gf >= 15 && gf <= 26, gf + ' 帧');
+  G.hurtEnemy(g, 9999, { noCrit: true });
+  check('保护过后照常结算', g.dead === true);
+}
+
+/* 范围持续输出（喷火 / 液氮 / 火焰环 / 冰霜环 / 地面火池 / 光束）对潜水的它
+   必须**完全**无效 —— 不只是直伤被拦，点燃、减速、冻结标记也不能挂上去。
+   以前只靠 hurtEnemy 拦直伤，状态照样生效：喷它一滴血不掉，一出水却带着火。 */
+{
+  const wet = () => {
+    G.run.enemies.length = 0;
+    pp.x = 0; pp.y = 0; pp.hp = pp.maxHp; pp.invuln = 1e9;
+    const d = G.spawnEnemy('drowner', false, 26, 0);
+    d.x = 26; d.y = 0; d.speed = 0;
+    d.submerged = true; d.subState = 2; d.subT = 99; d.subAng = Math.PI;
+    return d;
+  };
+  const breathe = (id, sub) => {
+    const d = wet();
+    if (sub) { d.submerged = false; d.subState = 0; d.subT = 0; }
+    const st = HS.Gear.stat({ id, lvl: 1, up: {} }, pp);
+    for (let k = 0; k < 8; k++) HS.Gear.flame(pp, 0, st, D.gear[id], true, 1);
+    return d;
+  };
+
+  const f1 = breathe('flamer');
+  check('喷火枪打不到水下的水鬼', Math.round(f1.hp) === Math.round(f1.maxHp), 'hp=' + Math.round(f1.hp));
+  check('火焰不会点燃水下的水鬼', !f1.burn, 'burn=' + (f1.burn || 0));
+  check('喷火枪出水后照常点着', (() => { const d = breathe('flamer', true); return d.burn > 0; })());
+
+  const c1 = breathe('cryo');
+  check('液氮打不到水下的水鬼', Math.round(c1.hp) === Math.round(c1.maxHp), 'hp=' + Math.round(c1.hp));
+  check('液氮不会冻住水下的水鬼', !c1.slow && !c1.synFrozen,
+    'slow=' + (c1.slow || 0) + ' frozen=' + (c1.synFrozen || 0));
+
+  for (const id of ['firering', 'frostring']) {
+    const d = wet();
+    const def = D.gear[id];
+    const st = HS.Gear.stat({ id, lvl: 1, up: {} }, pp);
+    const a = { id, lvl: 1, up: {}, tick: 0 };
+    d.x = st.radius * (pp.areaMul || 1);       // 正好站在环带上
+    for (let k = 0; k < 6; k++) { a.tick = 0; HS.Auto.ring(G.run, pp, a, def, st, 0.4); }
+    check(def.name + '碰不到水下的水鬼', Math.round(d.hp) === Math.round(d.maxHp) &&
+      !d.burn && !d.slow && !d.synFrozen,
+      'hp=' + Math.round(d.hp) + ' burn=' + (d.burn || 0));
+  }
+
+  /* 地面火池（燃烧瓶 / 火焰喷泉） */
+  {
+    const d = wet();
+    d.x = 26; d.y = 0;
+    G.run.pools.push({ x: 26, y: 0, r: 40, life: 9, max: 9, dps: 20, fire: 1, tick: 0.9, dead: false });
+    G.updateFx(0.1);
+    check('地面火池烧不到水下的水鬼', Math.round(d.hp) === Math.round(d.maxHp) && !d.burn,
+      'hp=' + Math.round(d.hp) + ' burn=' + (d.burn || 0));
+    G.run.pools.length = 0;
+  }
+
+  G.run.enemies.length = 0;
+  G.run.enemies.push(G.spawnEnemy('walker', false, 200, 200));
+}
 G.run.waterHazards.length = 0;
 G.run.t = 360; G.run.nextBossAt = 360; G.run.boss = null; G.run.bossSpawned = false;
 G.spawnBoss();
 check('锈水 Boss 是断堤巨斧', G.run.boss && G.run.boss.def.id === 'axeboss', G.run.boss && G.run.boss.def.name);
 check('巨斧 Boss 高耐久', G.run.boss.maxHp > 2000, Math.round(G.run.boss.maxHp));
 check('Boss 名称进入图鉴数据', !!D.enemies.axeboss && D.enemies.axeboss.boss === true);
+
+/* 交叉斩留的是"沿刀口划过的弧裂纹"，不是斧尖砸出来的圆坑。
+   圆坑读起来是砸（跃劈），交叉斩是挥 —— 两种招式在地上要能分辨。
+   而且这条弧**是判定边界本身**：玩家站在弧外必须真的打不到，
+   所以半径只能等于"这一刀砍得到哪"，不能等于起手距离（132）。 */
+{
+  G.run.enemies.length = 0;
+  G.run.breaks.length = 0;
+  pp.x = 0; pp.y = 0; pp.invuln = 1e9;
+  const B = G.spawnEnemy('axeboss', false, 90, 0);
+  B.boss = true; B.speed = 0;          // spawnEnemy 不打 boss 标记
+  B.aSt = 1; B.aT = 0.01; B.aAim = Math.PI;
+  for (let i = 0; i < 6; i++) { pp.invuln = 1e9; G.updateEnemies(1 / 60); }
+  const arcs = G.run.breaks.filter((b) => b.arc);
+  check('交叉斩在地面留下弧裂纹（不是圆坑）', arcs.length >= 1, arcs.length + ' 条');
+  check('两道斧各划一道（不被去重合并）', arcs.length === 2, arcs.length + ' 条');
+  check('弧裂纹有角度和弧长', arcs.length > 0 && arcs[0].span > 1 && arcs[0].ang !== undefined,
+    arcs.length ? 'span=' + arcs[0].span.toFixed(2) : '无');
+  check('弧长铺满判定扇形（半角 0.86 × 2）',
+    arcs.length > 0 && Math.abs(arcs[0].span - 1.72) < 1e-9,
+    arcs.length ? 'span=' + arcs[0].span.toFixed(2) + '（判定 ±0.86）' : '无');
+  B.dead = true;
+  G.run.breaks.length = 0;
+
+  /* 边界校准：玩家摆在弧内外各 0.5px，看这一刀到底打不打得到。
+     同时把裂纹半径读出来 —— 三个数字必须指向同一条线。
+     注意：前面的检查可能把玩家打升级了（state = 'levelup'），
+     而 damagePlayer 只在 'run' 里结算 —— 这里必须自己摆回战斗态，
+     否则这一条会随机变成"打不中还 0 伤害"。 */
+  const cleaveAt = (dist) => {
+    G.state = 'run';
+    G.run.enemies.length = 0;
+    G.run.breaks.length = 0;
+    pp.x = 0; pp.y = 0; pp.invuln = 0; pp.hp = pp.maxHp;
+    const bb = G.spawnEnemy('axeboss', false, dist, 0);
+    bb.boss = true; bb.speed = 0;
+    /* spawnEnemy 会把落点收进可走区（桥上 x 只到 ~105），
+       这里直接摆到指定距离：测的必须是判定边界本身，不是地形 */
+    bb.x = dist; bb.y = 0;
+    bb.aSt = 1; bb.aT = 0.01; bb.aAim = Math.PI;
+    const hp0 = pp.hp;
+    for (let i = 0; i < 6; i++) G.updateEnemies(1 / 60);
+    const lost = hp0 - pp.hp;
+    const arc = G.run.breaks.filter((b) => b.arc)[0];
+    const d = U.dist(bb.x, bb.y, pp.x, pp.y);
+    bb.dead = true;
+    G.run.enemies.length = 0;
+    return { lost, r: arc ? arc.r : null, d };
+  };
+  const justIn = cleaveAt(117.5);
+  const justOut = cleaveAt(118.5);
+  check('边界测试的站位没被地形挪动',
+    Math.abs(justIn.d - 117.5) < 0.01 && Math.abs(justOut.d - 118.5) < 0.01,
+    justIn.d.toFixed(1) + ' / ' + justOut.d.toFixed(1));
+  check('交叉斩：判定边界内会掉血', justIn.lost > 0, '距 117.5 → -' + justIn.lost.toFixed(1));
+  check('交叉斩：判定边界外不吃伤害', justOut.lost === 0, '距 118.5 → -' + justOut.lost.toFixed(1));
+  check('弧裂纹半径 = 判定边界（不是起手距离 132）',
+    justIn.r === 118 && justOut.r === 118,
+    '裂纹 r=' + justIn.r + '，判定边界在 117.5~118.5 之间');
+
+  pp.hp = pp.maxHp; pp.invuln = 1e9;
+  G.run.breaks.length = 0;
+}
 
 console.log('[渲染]');
 G.state = 'run';

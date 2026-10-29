@@ -24,3 +24,9 @@ node_modules/
 
 # WorkBuddy 应用标记文件
 *.genie
+
+# 临时脚本（点阵/图像处理的中间产物）
+.tmp/
+
+# 无头浏览器临时 profile（tools/shots.js 调试用）
+.tmp-chrome/

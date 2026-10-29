@@ -26,7 +26,7 @@ function check(name, cond, extra) {
 
 /* ---------- 扫射暴君 ---------- */
 console.log('[扫射暴君 night/gatling]');
-Game.startRun('night', 'soldier');
+Game.startRun('night', 'whale');
 let p = Game.run.p;
 p.x = 0; p.y = 0;
 const g = Game.spawnEnemy('gatling', false, 300, 0);
@@ -69,7 +69,7 @@ check('减伤 20% 生效', g.dmgCut === 0.2, 'dmgCut=' + g.dmgCut);
 
 /* ---------- 猎杀者 ---------- */
 console.log('[猎杀者 desert/stalker]');
-Game.startRun('desert', 'soldier');
+Game.startRun('desert', 'whale');
 p = Game.run.p;
 p.x = 0; p.y = 0;
 const s = Game.spawnEnemy('stalker', false, 200, 0);
@@ -143,7 +143,7 @@ check('损失生命提高攻击频率',
 /* ---------- 断堤巨斧 ---------- */
 console.log('[断堤巨斧 flood/axeboss]');
 Game.state = 'title';
-Game.startRun('flood', 'soldier');
+Game.startRun('flood', 'whale');
 p = Game.run.p;
 p.x = 0; p.y = 0;
 const ax = Game.spawnEnemy('axeboss', false, 100, 0);

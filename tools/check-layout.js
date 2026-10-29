@@ -50,12 +50,12 @@ for (const [w, h] of SCREENS) {
   P.W = w; P.H = h;
   const fs2 = n => Math.round(n * (P.W / 390));
   G.state = 'title';
-  G.startRun('highway', 'soldier');
+  G.startRun('highway', 'whale');
   G.state = 'mapselect';
   snap();
   HS.UI.mapSelect(G);
 
-  const desc = drawn.find(d => /四张图的尸群/.test(d.t));
+  const desc = drawn.find(d => /张图的尸群/.test(d.t));
   const label = drawn.find(d => d.t === '无尽模式');
   const swLeft = w * 0.88 - fs2(16) - fs2(38);
   const panelRight = w * 0.12 + w * 0.76 - fs2(16);
@@ -82,7 +82,7 @@ P.W = 390; P.H = 844;
 
 /* ---------- 2. 升级界面：重抽文案在胶囊正中 ---------- */
 G.state = 'title';
-G.startRun('highway', 'soldier');
+G.startRun('highway', 'whale');
 G.run.p.level = 5;
 G.state = 'levelup';
 G.run.choices = G.buildChoices(3);
@@ -105,6 +105,119 @@ if (rr) {
     'y=' + rr.y.toFixed(1) + ' 胶囊中心 ' + centerY.toFixed(1));
   ck('重抽文案放得下', rr.w <= fsPx(112) - fsPx(16), rr.w.toFixed(0) + ' ≤ ' + (fsPx(112) - fsPx(16)));
 }
+
+/* ---------- 3. 搜刮 / 空投的确认框：卡面 + 两个按钮都放得下 ---------- */
+{
+  G.state = 'title';
+  G.startRun('highway', 'whale');
+  G.state = 'run';
+
+  /* 描述故意写长（会折成两行），名字也不短 */
+  const card = {
+    kind: 'gearUp', id: 'saberring', name: '加长刃身', icon: 'saberring',
+    color: '#8ee9ff', rare: false, src: '武器专属',
+    sub: '光剑无人环  Lv1→2/2',
+    desc: '刃身 +8，外沿更远、贴身照样切（线段判定，近身的怪也吃得到）'
+  };
+  G.lootAsk = card;
+  G.lootFrom = '搜刮';
+  G.state = 'lootask';
+  snap();
+  G.hits.length = 0;
+  HS.UI.lootAsk(G);
+
+  const pw4 = P.W * 0.86, px4 = (P.W - pw4) / 2;
+  const ph4 = fsPx(206), py4 = Math.round((P.H - ph4) / 2);
+  const nameLine = drawn.find(d => d.t === card.name);
+  const subLine = drawn.find(d => d.t === card.sub);
+  const descText = card.desc;
+  const descLines = drawn.filter(d => d !== nameLine && d !== subLine && d.t &&
+    descText.indexOf(d.t.replace(/…$/, '')) >= 0);
+  const boxRight = px4 + pw4 - fsPx(10);
+
+  ck('确认框画出了卡名', !!nameLine, nameLine ? nameLine.t : '缺');
+  ck('确认框画出了效果（不是只有名字）', descLines.length > 0,
+    descLines.map(d => d.t).join(' / ') || '缺');
+  ck('确认框画出了副标题', !!subLine, subLine ? subLine.t : '缺');
+  const boxTexts = [nameLine, subLine].concat(descLines).filter(Boolean);
+  ck('确认框文字不出右边界', boxTexts.every(d => d.x + d.w <= boxRight + 0.5),
+    boxTexts.map(d => (d.x + d.w).toFixed(0)).join(',') + ' ≤ ' + boxRight.toFixed(0));
+  const yes = G.hits.find(h => h.id === 'loot:yes'), no = G.hits.find(h => h.id === 'loot:no');
+  ck('确认框有两个按钮', !!yes && !!no);
+  ck('按钮不重叠', !!yes && !!no && no.x + no.w <= yes.x,
+    no && yes ? (no.x + no.w).toFixed(0) + ' ≤ ' + yes.x.toFixed(0) : '缺按钮');
+  ck('按钮在面板里', !!yes && !!no && yes.y + yes.h <= py4 + ph4 + 0.5 && no.x >= px4,
+    yes ? (yes.y + yes.h).toFixed(0) + ' ≤ ' + (py4 + ph4).toFixed(0) : '缺按钮');
+  const lastBoxY = Math.max.apply(null, boxTexts.map(d => d.y));
+  ck('卡面不压按钮', !!yes && lastBoxY + fsPx(10) <= yes.y,
+    yes ? lastBoxY.toFixed(0) + ' + 10 ≤ ' + yes.y.toFixed(0) : '缺按钮');
+
+  /* 换手持武器的版本：多一段"会失去什么"，也不能压到按钮 */
+  G.lootAsk = G.makeCard({ kind: 'weaponNew', id: 'smg' });
+  G.state = 'lootask';
+  snap();
+  G.hits.length = 0;
+  HS.UI.lootAsk(G);
+  const ph5 = fsPx(262), py5 = Math.round((P.H - ph5) / 2);
+  const warn = drawn.find(d => /换掉会连等级和分支一起清空/.test(d.t));
+  const yes2 = G.hits.find(h => h.id === 'loot:yes');
+  ck('换装确认框写出了"会失去什么"', !!warn, warn ? warn.t : '缺');
+  ck('换装确认框的文字不压按钮',
+    !!warn && !!yes2 && warn.y + fsPx(10) <= yes2.y,
+    warn && yes2 ? warn.y.toFixed(0) + ' + 10 ≤ ' + yes2.y.toFixed(0) : '缺文案');
+  ck('换装确认框的按钮也在面板里', !!yes2 && yes2.y + yes2.h <= py5 + ph5 + 0.5);
+  G.lootAsk = null;
+  G.state = 'run';
+}
+
+/* ---------- 4. 暂停页 / 暂停里的设置页：各种屏幕都不越界、不叠 ---------- */
+for (const [w, h] of SCREENS) {
+  const fs2 = n => Math.round(n * (w / 390));
+  P.W = w; P.H = h;
+  G.state = 'title';
+  G.startRun('highway', 'whale');
+  G.state = 'paused';
+  G.pauseSet = false;
+  G.hits.length = 0;
+  snap();
+  HS.UI.pause(G);
+
+  const resume = G.hits.find(x => x.id === 'resume');
+  const setBtn = G.hits.find(x => x.id === 'pause:set');
+  const restart = G.hits.find(x => x.id === 'restart');
+  const quit = G.hits.find(x => x.id === 'quit');
+  ck(w + 'x' + h + ' 暂停页四个按钮都在', !!resume && !!setBtn && !!restart && !!quit,
+    G.hits.map(x => x.id).join(','));
+  ck(w + 'x' + h + ' 暂停按钮依次排开不重叠',
+    !!resume && !!setBtn && !!restart && !!quit &&
+    resume.y + resume.h <= setBtn.y && setBtn.y + setBtn.h <= restart.y &&
+    restart.y + restart.h <= quit.y,
+    [resume, setBtn, restart, quit].filter(Boolean).map(b => b.y.toFixed(0)).join('/'));
+  ck(w + 'x' + h + ' 暂停按钮不压构筑面板',
+    !!resume && resume.y >= h * 0.245 + fs2(150) + 1,
+    resume ? resume.y.toFixed(0) + ' ≥ ' + (h * 0.245 + fs2(150)).toFixed(0) : '缺');
+  ck(w + 'x' + h + ' 暂停按钮不出屏', !!quit && quit.y + quit.h <= h,
+    quit ? (quit.y + quit.h).toFixed(0) + ' ≤ ' + h : '缺');
+
+  /* 设置子页 */
+  G.pauseSet = true;
+  G.hits.length = 0;
+  snap();
+  HS.UI.pause(G);
+  const setIds = G.hits.map(x => x.id);
+  const back = G.hits.find(x => x.id === 'pause:back');
+  const fxRow = G.hits.find(x => x.id === 'set:fx');
+  ck(w + 'x' + h + ' 设置子页四个开关都在',
+    ['set:sfx', 'set:bgm', 'set:vib', 'set:fx'].every(id => setIds.indexOf(id) >= 0), setIds.join(','));
+  ck(w + 'x' + h + ' 设置子页不再留 HUD 命中区', setIds.indexOf('pause') < 0);
+  ck(w + 'x' + h + ' 返回暂停按钮不压最后一行',
+    !!back && !!fxRow && fxRow.y + fxRow.h <= back.y,
+    back && fxRow ? (fxRow.y + fxRow.h).toFixed(0) + ' ≤ ' + back.y.toFixed(0) : '缺');
+  ck(w + 'x' + h + ' 返回暂停按钮不出屏', !!back && back.y + back.h <= h,
+    back ? (back.y + back.h).toFixed(0) + ' ≤ ' + h : '缺');
+  G.pauseSet = false;
+}
+P.W = 390; P.H = 844;
 
 console.log(bad ? '\n' + bad + ' 项失败' : '\n全部通过');
 process.exit(bad ? 1 : 0);

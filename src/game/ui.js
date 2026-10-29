@@ -669,12 +669,15 @@
       var s = Math.max(W / iw, H / ih);
       var dw = iw * s, dh = ih * s;
       ctx.drawImage(im, (W - dw) / 2, (H - dh) / 2, dw, dh);
-      /* 上下压暗：给标题和按钮让出对比度 */
-      var tg = ctx.createLinearGradient(0, 0, 0, H * 0.38);
-      tg.addColorStop(0, 'rgba(12,8,12,0.62)');
+      /* 上下压暗：给标题和按钮让出对比度。
+         上半段压到 0.46H 且中段留 0.46 的不透明度 —— 封面里那圈夕阳正好压在
+         DEAD ZONE / 副标题这一行上，只淡到 0.38H 的话这两行会糊在亮黄背景里看不清 */
+      var tg = ctx.createLinearGradient(0, 0, 0, H * 0.46);
+      tg.addColorStop(0, 'rgba(12,8,12,0.72)');
+      tg.addColorStop(0.55, 'rgba(12,8,12,0.46)');
       tg.addColorStop(1, 'rgba(12,8,12,0)');
       ctx.fillStyle = tg;
-      ctx.fillRect(0, 0, W, H * 0.38);
+      ctx.fillRect(0, 0, W, H * 0.46);
       var bgd = ctx.createLinearGradient(0, H * 0.52, 0, H);
       bgd.addColorStop(0, 'rgba(12,8,12,0)');
       bgd.addColorStop(1, 'rgba(12,8,12,0.7)');
@@ -716,8 +719,13 @@
     text(ctx, '死 区', 0, fs(1), 23, '#ffe9e2', 'center', true);
     ctx.restore();
 
+    /* 封面这圈夕阳比程序化背景亮得多：这两行小字加一层暗影，否则糊在亮黄里 */
+    ctx.save();
+    ctx.shadowColor = 'rgba(8,6,10,0.92)';
+    ctx.shadowBlur = 7;
     text(ctx, 'D E A D   Z O N E', W / 2, H * 0.262, 10.5, C.accent, 'center');
-    text(ctx, '像素肉鸽 · 高速打僵尸', W / 2, H * 0.29, 11, 'rgba(240,232,224,0.78)', 'center', false);
+    text(ctx, '像素肉鸽 · 高速打僵尸', W / 2, H * 0.29, 11, 'rgba(240,232,224,0.86)', 'center', false);
+    ctx.restore();
 
     /* ---- 按钮：斜切钢板，压在画面下半的公路上 ---- */
     var bw = W * 0.72, bx = (W - bw) / 2;
@@ -782,22 +790,30 @@
         sel ? 'rgba(255,90,60,0.13)' : 'rgba(255,255,255,0.045)',
         sel ? 'rgba(255,90,60,0.7)' : C.line);
 
-      text(ctx, m.name, W * 0.06 + fs(16), y + fs(18), 16, locked ? C.dim : C.text, 'left', true);
+      /* 五张图以后卡片只有 48~58 高，三行文字必须整体压紧 */
+      var tight = ch < fs(66);
+      var l1 = tight ? fs(15) : fs(18);
+      var l2 = tight ? fs(31) : fs(37);
+      var l3 = tight ? fs(44) : fs(53);
+
+      text(ctx, m.name, W * 0.06 + fs(16), y + l1, tight ? 14 : 16, locked ? C.dim : C.text, 'left', true);
       /* 地图的特殊规则挂一个标签，别让玩家进去才发现"射程怎么变短了" */
       if (m.night) {
         text(ctx, '夜间 · 射程 -' + Math.round((1 - (m.rangeMul || 1)) * 100) + '%',
-          W * 0.06 + W * 0.88 - fs(44), y + fs(18), 9.5, '#7ee8fa', 'right', true);
+          W * 0.06 + W * 0.88 - fs(44), y + l1, 9.5, '#7ee8fa', 'right', true);
       } else if (m.gunmen) {
-        text(ctx, '枪手出没', W * 0.06 + W * 0.88 - fs(44), y + fs(18), 9.5, '#ff9f43', 'right', true);
+        text(ctx, '枪手出没', W * 0.06 + W * 0.88 - fs(44), y + l1, 9.5, '#ff9f43', 'right', true);
       } else if (m.water) {
-        text(ctx, '积水 · 导电', W * 0.06 + W * 0.88 - fs(38), y + fs(18), 9.5, '#8fd8c7', 'right', true);
+        text(ctx, '积水 · 导电', W * 0.06 + W * 0.88 - fs(38), y + l1, 9.5, '#8fd8c7', 'right', true);
+      } else if (m.tunnel) {
+        text(ctx, '自爆尸 · 双首领', W * 0.06 + W * 0.88 - fs(38), y + l1, 9.5, '#e6ff62', 'right', true);
       }
       var prevName = D.maps[D.mapOrder[Math.max(0, D.mapOrder.indexOf(m.id) - 1)]].name;
       text(ctx, locked ? ('通关「' + prevName + '」解锁')
         : ('经验 x' + m.xpMul.toFixed(2) + '  搜刮 x' + m.goldMul.toFixed(2) + '  通关 +' + (m.clearGold || 0)),
-        W * 0.06 + fs(16), y + fs(37), 9.5, locked ? '#d08a5a' : C.gold, 'left', false);
+        W * 0.06 + fs(16), y + l2, 9.5, locked ? '#d08a5a' : C.gold, 'left', false);
       var mds = wrap2(ctx, m.desc, W * 0.88 - fs(32), 9);
-      text(ctx, mds[1] ? mds[0].replace(/.$/, '…') : mds[0], W * 0.06 + fs(16), y + fs(53), 9, C.dim, 'left', false);
+      text(ctx, mds[1] ? mds[0].replace(/.$/, '…') : mds[0], W * 0.06 + fs(16), y + l3, 9, C.dim, 'left', false);
 
       if (!locked) {
         g.hits.push({ id: 'map:' + m.id, x: W * 0.06, y: y, w: W * 0.88, h: ch });
@@ -815,7 +831,7 @@
     var ey = H * 0.665, eh = fs(56);
     panel(ctx, W * 0.12, ey, W * 0.76, eh, 12, 'rgba(255,255,255,0.04)', C.line);
     text(ctx, '无尽模式', W * 0.12 + fs(16), ey + fs(18), 12.5, C.text, 'left', true);
-    text(ctx, '四张图的尸群按顺序登场 · Boss 越来越强', W * 0.12 + fs(16), ey + fs(38), 9.5, C.dim, 'left', false);
+    text(ctx, '五张图的尸群按顺序登场 · Boss 越来越强', W * 0.12 + fs(16), ey + fs(38), 9.5, C.dim, 'left', false);
     var swW = fs(38), swH = fs(20), swX = W * 0.88 - fs(16) - swW, swY = ey + fs(18) - swH / 2;
     rr(ctx, swX, swY, swW, swH, swH / 2);
     ctx.fillStyle = g.endless ? 'rgba(255,90,60,0.85)' : 'rgba(255,255,255,0.12)';
@@ -862,53 +878,47 @@
 
     if (g.tab === 'char') {
       var cw = W * 0.88, cx = W * 0.06;
-      var chh = fs(74), cgap = fs(9);
-      for (var j = 0; j < D.charOrder.length; j++) {
-        var ch = D.chars[D.charOrder[j]];
-        var owned = HS.Save.hasChar(ch.id);
-        var sel = g.selChar === ch.id;
-        var yy = cy + j * (chh + cgap);
+      var ch = D.chars.whale;
+      var cardH = fs(196);
 
-        panel(ctx, cx, yy, cw, chh, 12,
-          sel ? 'rgba(126,232,250,0.10)' : 'rgba(255,255,255,0.04)',
-          sel ? 'rgba(126,232,250,0.55)' : C.line);
+      panel(ctx, cx, cy, cw, cardH, 12, 'rgba(126,232,250,0.075)', 'rgba(126,232,250,0.34)');
 
-        /* 头像 */
-        ctx.fillStyle = U.rgba(ch.color, owned ? 0.16 : 0.07);
-        ctx.beginPath();
-        ctx.arc(cx + fs(26), yy + chh / 2, fs(19), 0, U.TAU);
-        ctx.fill();
-        ctx.strokeStyle = U.rgba(ch.color, owned ? 0.5 : 0.18);
-        ctx.lineWidth = 1;
-        ctx.stroke();
-        S.draw(ctx, 'player_' + ch.id, cx + fs(26), yy + chh / 2, 3, owned ? 1 : 0.28);
+      /* 角色展示：直接用局内那套 48x56 的像素帧放大。
+         之前这里放的是原图裁切的 121x161 立绘，结果 Toy 包体安检没过 ——
+         清晰版人物图（女仆装 / 过膝袜的幼态角色）会被内容安全模型命中，
+         糊成 48x56 的像素帧反而没事。所以整包不再带任何"清晰人物图"。 */
+      var pw = Math.round(121 * 0.86 * (fs(1)));
+      var ph = Math.round(161 * 0.86 * (fs(1)));
+      var px0 = cx + fs(12);
+      var py0 = cy + (cardH - ph) / 2;
+      rr(ctx, px0 - fs(4), py0 - fs(4), pw + fs(8), ph + fs(8), fs(10));
+      ctx.fillStyle = 'rgba(10,16,30,0.42)';
+      ctx.fill();
+      ctx.strokeStyle = U.rgba(ch.color, 0.4);
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      /* 像素帧按框宽反算：帧自带 s=0.5，48 宽 × scale × 0.5 = pw，
+         即 scale = pw / 24；高度 56 会落在 138 的框高之内，居中。 */
+      S.draw(ctx, 'player_whale_dn_0', px0 + pw / 2, py0 + ph / 2, pw / 24, 1);
 
-        text(ctx, ch.name, cx + fs(46), yy + fs(20), 15, owned ? C.text : C.dim, 'left', true);
-        var nameW = ctx.measureText(ch.name).width;
-        text(ctx, ch.tag, cx + fs(46) + nameW + fs(8), yy + fs(20), 9.5, ch.color, 'left', false);
-        /* 特性 / 描述必须收在右侧价格按钮左边：未解锁时右侧有 fs(84) 的按钮，
-           以前不限宽会直接压到「解锁 300」底下 */
-        var descW = cw - fs(46) - fs(10) - (owned ? fs(70) : fs(84));
-        var pls = wrap2(ctx, ch.perks.join(' · '), descW, 10);
-        text(ctx, pls[1] ? pls[0].replace(/.$/, '…') : pls[0],
-          cx + fs(46), yy + fs(40), 10, C.dim, 'left', false);
-        var dls = wrap2(ctx, ch.desc, descW, 9.5);
-        text(ctx, dls[1] ? dls[0].replace(/.$/, '…') : dls[0],
-          cx + fs(46), yy + fs(56), 9.5, 'rgba(139,149,163,0.8)', 'left', false);
+      var tx = px0 + pw + fs(16);
+      var tw = cx + cw - tx - fs(12);
+      text(ctx, ch.name, tx, cy + fs(26), 18, C.text, 'left', true);
+      text(ctx, ch.tag, tx, cy + fs(46), 10, ch.color, 'left', false);
 
-        if (!owned) {
-          var label = d.gold >= ch.cost ? ('解锁 ' + ch.cost) : (ch.cost + ' 金币');
-          button(g, ctx, 'char:' + ch.id, cx + cw - fs(84), yy + chh / 2 - fs(15), fs(74), fs(30),
-            label, d.gold >= ch.cost ? 'primary' : 'disabled', true);
-        } else if (sel) {
-          text(ctx, '已选择', cx + cw - fs(14), yy + chh / 2, 11, C.blue, 'right');
-        } else {
-          g.hits.push({ id: 'char:' + ch.id, x: cx, y: yy, w: cw, h: chh });
-          text(ctx, '点击选择', cx + cw - fs(14), yy + chh / 2, 10.5, C.dim, 'right');
-        }
+      for (var pi = 0; pi < ch.perks.length; pi++) {
+        text(ctx, '· ' + ch.perks[pi], tx, cy + fs(66) + pi * fs(17), 10, C.dim, 'left', false);
       }
 
-      var tipY = cy + D.charOrder.length * (chh + cgap) + fs(6);
+      var dl = wrap2(ctx, ch.desc, tw, 9.5);
+      for (var di = 0; di < dl.length && di < 3; di++) {
+        text(ctx, dl[di], tx, cy + fs(126) + di * fs(14), 9.5, 'rgba(139,149,163,0.8)', 'left', false);
+      }
+
+      /* 唯一的角色，没有选择/解锁，这里只放一句定位 */
+      text(ctx, '本作只有一个可操控角色', tx, cy + cardH - fs(14), 9, 'rgba(126,232,250,0.55)', 'left', false);
+
+      var tipY = cy + cardH + fs(10);
       panel(ctx, cx, tipY, cw, fs(112), 12, 'rgba(255,209,102,0.06)', 'rgba(255,209,102,0.22)');
       text(ctx, '上路须知', cx + fs(14), tipY + fs(15), 11, C.gold, 'left', true);
       text(ctx, '· 青色门口 = 完整房屋；金色菱形 = 可搜刮家具', cx + fs(14), tipY + fs(33), 9.5, C.dim, 'left', false);
@@ -916,8 +926,23 @@
       text(ctx, '· 武器满级 + 对应被动 Lv3 → 触发武器进化', cx + fs(14), tipY + fs(65), 9.5, C.dim, 'left', false);
       var tipMap = D.maps[g.selMap] || D.maps.highway;
       var tipBoss = (D.enemies[tipMap.bossId] || D.enemies.boss).name;
-      text(ctx, '· 撑过 6 分钟，' + tipBoss + '会从侧翼入场', cx + fs(14), tipY + fs(81), 9.5, C.dim, 'left', false);
+      if (tipMap.bossIds && tipMap.bossIds.length > 1) {
+        tipBoss = (D.enemies[tipMap.bossIds[0]] || D.enemies.boss).name + ' 与 ' +
+          (D.enemies[tipMap.bossIds[1]] || D.enemies.boss).name;
+        text(ctx, '· 撑过 6 分钟，' + tipBoss + '同时入场（都要打死）', cx + fs(14), tipY + fs(81), 9.5, C.dim, 'left', false);
+      } else {
+        text(ctx, '· 撑过 6 分钟，' + tipBoss + '会从侧翼入场', cx + fs(14), tipY + fs(81), 9.5, C.dim, 'left', false);
+      }
       text(ctx, '· 路边偶有能开的破车：碾压爽，但武器全收起、耐久烧完就报废', cx + fs(14), tipY + fs(97), 9.5, '#ffb08a', 'left', false);
+
+      /* 朝向开关：四向贴图切的时候是整块换的，有人觉得"变形"，给个固定正面的选项 */
+      var tvY = tipY + fs(112) + fs(10);
+      panel(ctx, cx, tvY, cw, fs(48), 12, 'rgba(255,255,255,0.04)', C.line);
+      text(ctx, '角色朝向', cx + fs(14), tvY + fs(17), 12, C.text, 'left', true);
+      text(ctx, g.turnView ? '跟着移动方向转身（四向贴图）' : '固定正面朝镜头（不转身）',
+        cx + fs(14), tvY + fs(34), 9.5, g.turnView ? C.blue : C.dim, 'left', false);
+      g.hits.push({ id: 'set:turn', x: cx, y: tvY, w: cw, h: fs(48) });
+      switchBox(ctx, cx + cw - fs(56), tvY + fs(24) - fs(11), fs(44), fs(22), g.turnView, C.blue);
     }
 
     if (g.tab === 'up') {
@@ -1110,35 +1135,13 @@
     text(ctx, sub, x + fs(50), y + fs(35), 9.2, C.dim, 'left', false);
   }
 
-  UI.settings = function (g) {
-    var ctx = P.ctx, W = P.W, H = P.H;
-    bg(ctx, g);
-
-    /* 压暗背景，但越往下越透，避免下半屏闷成一块黑 */
-    var scrim = ctx.createLinearGradient(0, 0, 0, H);
-    scrim.addColorStop(0, 'rgba(6,8,12,0.88)');
-    scrim.addColorStop(0.58, 'rgba(6,8,12,0.82)');
-    scrim.addColorStop(1, 'rgba(6,8,12,0.52)');
-    ctx.fillStyle = scrim;
-    ctx.fillRect(0, 0, W, H);
-
-    var top = Math.max(fs(22), P.safeTop + fs(12));
-    var bh = fs(32);
-
-    /* 返回 */
-    g.hits.push({ id: 'back', x: fs(10), y: top - fs(6), w: fs(74), h: bh + fs(12) });
-    icon(ctx, 'chevronL', fs(20), top + bh / 2, fs(15), C.text);
-    text(ctx, '返回', fs(31), top + bh / 2 + 1, 12.5, C.text, 'left', false);
-    text(ctx, '设置', W / 2, top + bh / 2 + 1, 17, C.text, 'center', true);
-
-    var rx = W * 0.06, rw = W * 0.88;
-    var rh = fs(52);
-    var y = top + bh + fs(24);
-
-    /* --- 游戏 --- */
-    sectLabel(ctx, rx + fs(4), y, '游戏');
-    y += fs(16);
-
+  /**
+   * 四个开关：音效 / 背景音乐 / 震动反馈 / 画面特效。
+   * 标题页的设置和**局内暂停**的设置共用这一份 —— 以前只有标题页能改，
+   * 打到一半觉得枪声太吵、或者被震得头晕，只能退出这一局。
+   * 返回下一行的 y。
+   */
+  function settingRows(g, ctx, rx, rw, rh, y) {
     setRow(ctx, rx, y, rw, rh, g.sfxOn ? 'sound' : 'mute', '音效',
       '枪声、爆炸与拾取提示音', g.sfxOn ? C.green : C.dim);
     g.hits.push({ id: 'set:sfx', x: rx, y: y, w: rw, h: rh });
@@ -1167,6 +1170,38 @@
     ctx.fillStyle = g.fxLow ? 'rgba(255,255,255,0.08)' : 'rgba(255,209,102,0.16)';
     ctx.fill();
     text(ctx, fxLabel, rx + rw - fxw / 2 - fs(12), y + rh / 2 + 1, 12, fxColor, 'center', true);
+    return y;
+  }
+
+  UI.settings = function (g) {
+    var ctx = P.ctx, W = P.W, H = P.H;
+    bg(ctx, g);
+
+    /* 压暗背景，但越往下越透，避免下半屏闷成一块黑 */
+    var scrim = ctx.createLinearGradient(0, 0, 0, H);
+    scrim.addColorStop(0, 'rgba(6,8,12,0.88)');
+    scrim.addColorStop(0.58, 'rgba(6,8,12,0.82)');
+    scrim.addColorStop(1, 'rgba(6,8,12,0.52)');
+    ctx.fillStyle = scrim;
+    ctx.fillRect(0, 0, W, H);
+
+    var top = Math.max(fs(22), P.safeTop + fs(12));
+    var bh = fs(32);
+
+    /* 返回 */
+    g.hits.push({ id: 'back', x: fs(10), y: top - fs(6), w: fs(74), h: bh + fs(12) });
+    icon(ctx, 'chevronL', fs(20), top + bh / 2, fs(15), C.text);
+    text(ctx, '返回', fs(31), top + bh / 2 + 1, 12.5, C.text, 'left', false);
+    text(ctx, '设置', W / 2, top + bh / 2 + 1, 17, C.text, 'center', true);
+
+    var rx = W * 0.06, rw = W * 0.88;
+    var rh = fs(52);
+    var y = top + bh + fs(24);
+
+    /* --- 游戏 --- */
+    sectLabel(ctx, rx + fs(4), y, '游戏');
+    y += fs(16);
+    y = settingRows(g, ctx, rx, rw, rh, y);
 
     /* --- 操作（矮屏放不下就跳过，优先保证上面的设置项） --- */
     y += rh + fs(28);
@@ -1223,14 +1258,11 @@
       y += fs(16);
       panel(ctx, rx, y, rw, fs(74), fs(12), 'rgba(255,255,255,0.042)', 'rgba(255,255,255,0.07)');
 
-      var charTotal = 0, ck;
-      for (ck in D.chars) if (D.chars.hasOwnProperty(ck)) charTotal++;
-
       var rec = [
         ['总局数', d.runs + ' 局'],
         ['最高等级', 'Lv.' + (d.bestLevel || 1)],
         ['单局击杀', String(d.bestKills || 0)],
-        ['解锁角色', (d.chars ? d.chars.length : 1) + '/' + charTotal]
+        ['累计金币', String(d.totalGold || 0)]
       ];
       for (var ri = 0; ri < 4; ri++) {
         var col = ri % 2, line = (ri - col) / 2;
@@ -1517,26 +1549,47 @@
     ctx.fillStyle = 'rgba(255,255,255,0.18)';
     ctx.fillRect(0, xpY, W * xr, fs(2));
 
-    /* Boss 血条（底部，避开顶部 HUD） */
-    if (run.boss && !run.boss.dead) {
-      var bw = W * 0.7, bh = fs(9);
-      var bx2 = (W - bw) / 2, by2 = H - fs(46);
+    /* Boss 血条（底部，避开顶部 HUD）
+       公路隧道是双首领：两条并排往上叠，谁先掉血一眼能看出来。
+       血条只画"还活着"的 —— 倒下的那只直接从列表里消失，
+       玩家看到第二条往上挪了一格，就知道只剩一只了。 */
+    var liveBosses = [];
+    if (run.bosses && run.bosses.length) {
+      for (var lb = 0; lb < run.bosses.length; lb++) {
+        if (run.bosses[lb] && !run.bosses[lb].dead) liveBosses.push(run.bosses[lb]);
+      }
+    } else if (run.boss && !run.boss.dead) {
+      liveBosses.push(run.boss);
+    }
+    /* 两条时往上叠：每条占 fs(25)（名字 + 间隙 + 条），
+       挤在 fs(17) 里名字会压在另一条的血条上 */
+    var bSlot = liveBosses.length > 1 ? fs(25) : fs(26);
+    for (var bi2 = 0; bi2 < liveBosses.length; bi2++) {
+      var beB = liveBosses[bi2];
+      var bw = W * (liveBosses.length > 1 ? 0.62 : 0.7), bh = fs(8);
+      var bx2 = (W - bw) / 2, by2 = H - fs(46) - bi2 * bSlot;
       rr(ctx, bx2, by2, bw, bh, bh / 2);
       ctx.fillStyle = 'rgba(0,0,0,0.6)';
       ctx.fill();
-      var br = Math.max(0, run.boss.hp / run.boss.maxHp);
+      var br = Math.max(0, beB.hp / beB.maxHp);
       if (br > 0) {
         rr(ctx, bx2, by2, Math.max(bh, bw * br), bh, bh / 2);
         var bg2 = ctx.createLinearGradient(bx2, 0, bx2 + bw, 0);
-        bg2.addColorStop(0, '#ff2d2d');
-        bg2.addColorStop(1, '#8b0000');
+        /* 尖啸者冷蓝、育母腐黄：两只同屏时也要能分辨是谁在掉血 */
+        var hpA = (beB.def && beB.def.bossType === 'shrieker') ? '#5ec8ff' : '#ff2d2d';
+        var hpB = (beB.def && beB.def.bossType === 'shrieker') ? '#1d4f8b' : '#8b0000';
+        bg2.addColorStop(0, hpA);
+        bg2.addColorStop(1, hpB);
         ctx.fillStyle = bg2;
         ctx.fill();
       }
       /* 名字必须跟着当前这张图的首领走 —— 写死会让第二 / 第三关的 Boss
          顶着"血肉暴君"的头衔打加特林，玩家只会以为选错了关卡 */
-      var bossNm = (run.boss.def && run.boss.def.name) || '区域首领';
-      text(ctx, bossNm, W / 2, by2 - fs(9), 10, '#ff8a8a', 'center', true);
+      var bossNm = (beB.def && beB.def.name) || '区域首领';
+      if (liveBosses.length > 1) {
+        bossNm += '  ' + (bi2 + 1) + '/' + liveBosses.length;
+      }
+      text(ctx, bossNm, W / 2, by2 - fs(7), 9, '#ff8a8a', 'center', true);
     }
 
     /* 右下交互区：搜刮 / 上楼 / 下楼 / 跳下（从下往上叠） */
@@ -1612,7 +1665,17 @@
       var bsize = 20;
       var bmax = W * 0.9;
       while (bsize > 11 && measure(ctx, g.banner, bsize, true) > bmax) bsize--;
-      text(ctx, g.banner, W / 2, H * 0.26, bsize, '#ffb08a', 'center', true);
+      /* 11px 还放不下就截断。搜刮到卡这类横幅会带上卡的效果
+         （「搜刮到补给：伤害加成 · 所有武器伤害 +8%」），联动卡的描述更长，
+         不截就会顶到屏幕外面去 */
+      var btxt = g.banner;
+      if (measure(ctx, btxt, bsize, true) > bmax) {
+        while (btxt.length > 4 && measure(ctx, btxt + '…', bsize, true) > bmax) {
+          btxt = btxt.slice(0, btxt.length - 1);
+        }
+        btxt += '…';
+      }
+      text(ctx, btxt, W / 2, H * 0.26, bsize, '#ffb08a', 'center', true);
       ctx.fillStyle = 'rgba(255,90,60,' + (0.6 * ba).toFixed(2) + ')';
       ctx.fillRect(W / 2 - fs(40), H * 0.26 + fs(18), fs(80), 1.5);
       ctx.globalAlpha = 1;
@@ -1686,12 +1749,47 @@
 
       panel(ctx, cx, y, cw, chh, 16,
         rare ? 'rgba(255,209,102,0.12)' : 'rgba(255,255,255,0.055)',
-        rare ? 'rgba(255,209,102,0.75)' : C.line);
+        /* 进化卡不画金色描边：它已经有彩虹边了，两条线叠在同一条路径上，
+           抗锯齿饱和之后顶部会显出一道发白的毛边 */
+        c.kind === 'evolve' ? null : (rare ? 'rgba(255,209,102,0.75)' : C.line));
 
       if (rare) {
         ctx.fillStyle = 'rgba(255,209,102,0.06)';
         rr(ctx, cx - 4, y - 4, cw + 8, chh + 8, 18);
         ctx.fill();
+      }
+
+      /* 进化卡：炫彩流动边框。
+         它和同屏另外两张不是一个量级的东西（换掉整把枪的行为），
+         以前只有金色描边 —— 而「稀有属性卡」也是金色，一眼分不出来，
+         玩家经常在"这次能进化"的时刻顺手点了旁边那张 +12%。
+         渐变轴绕着卡心旋转，颜色就沿边框流动；外圈再压一层同色低透明描边当辉光。 */
+      if (c.kind === 'evolve') {
+        var evT = (g.uiT || 0) * 1.6;
+        var evCX = cx + cw / 2, evCY = y + chh / 2;
+        var evDX = Math.cos(evT) * cw * 0.55, evDY = Math.sin(evT) * chh * 0.55;
+        var evG = ctx.createLinearGradient(evCX - evDX, evCY - evDY, evCX + evDX, evCY + evDY);
+        evG.addColorStop(0.00, '#ff5f6d');
+        evG.addColorStop(0.20, '#ffd166');
+        evG.addColorStop(0.42, '#8ce99a');
+        evG.addColorStop(0.64, '#7ee8fa');
+        evG.addColorStop(0.84, '#b197fc');
+        evG.addColorStop(1.00, '#ff5f6d');
+        ctx.save();
+        /* 辉光层要**垫在卡片外面**：和主描边同位置会三层（辉光 + 主边 + 底下的
+           金色描边）叠在同一条线上，抗锯齿饱和之后顶部会显出一条发白的毛边 */
+        ctx.globalAlpha = 0.22;
+        ctx.strokeStyle = evG;
+        ctx.lineWidth = fs(7);
+        rr(ctx, cx - 3, y - 3, cw + 6, chh + 6, 19);
+        ctx.stroke();
+        ctx.restore();
+        ctx.strokeStyle = evG;
+        ctx.lineWidth = fs(2.4);
+        /* 和 panel 完全同位置同半径：差 1px 就会露出底下的金色描边，
+           顶部看起来像一道发白的毛边 */
+        rr(ctx, cx, y, cw, chh, 16);
+        ctx.stroke();
       }
 
       /* 图标槽：12x12 点阵按 2 屏幕像素一格，方块感最正 */
@@ -1701,12 +1799,25 @@
       text(ctx, c.name, cx + fs(78), y + fs(30), 17, rare ? C.gold : C.text, 'left', true);
       text(ctx, c.sub, cx + fs(78), y + fs(52), 10, rare ? C.gold : C.dim, 'left', false);
       var descW = cw - fs(78) - fs(22);
-      var dl = wrap2(ctx, c.desc, descW, 10.5);
-      text(ctx, dl[0], cx + fs(78), y + fs(74), 10.5, 'rgba(233,238,245,0.8)', 'left', false);
-      if (dl[1]) {
-        text(ctx, dl[1], cx + fs(78), y + fs(88), 10.5, 'rgba(233,238,245,0.8)', 'left', false);
-      } else if (c.hint) {
-        text(ctx, c.hint, cx + fs(78), y + fs(90), 8.5, 'rgba(139,149,163,0.9)', 'left', false);
+      if (c.kind === 'trade' && c.gain) {
+        /* 取舍卡：得到一色、失去一色，分两行。混成一句话玩家只会读前半句，
+           然后以为自己白拿了 +12% */
+        text(ctx, '+ ' + c.gain, cx + fs(78), y + fs(74), 10.5, '#8ce99a', 'left', false);
+        text(ctx, '- ' + c.lose, cx + fs(78), y + fs(88), 10.5, '#ff8a8a', 'left', false);
+      } else {
+        var dl = wrap2(ctx, c.desc, descW, 10.5);
+        text(ctx, dl[0], cx + fs(78), y + fs(74), 10.5, 'rgba(233,238,245,0.8)', 'left', false);
+        if (dl[1]) {
+          text(ctx, dl[1], cx + fs(78), y + fs(88), 10.5, 'rgba(233,238,245,0.8)', 'left', false);
+        } else if (c.hint) {
+          text(ctx, c.hint, cx + fs(78), y + fs(90), 8.5, 'rgba(139,149,163,0.9)', 'left', false);
+        }
+      }
+
+      /* 底栏（卡片最下面那条空位）：联动卡写「拿卡附赠什么」，满级卡写进化提示。
+         赠品以前只塞在副标题里，玩家读完描述就点了 —— 白拿一件装备却毫不知情。 */
+      if (c.foot) {
+        text(ctx, c.foot, cx + fs(78), y + fs(102), 9.5, c.footColor || C.dim, 'left', true);
       }
 
       /* 来源标签：让玩家一眼分清通用 / 专属 / 联动 / 进化 */
@@ -1714,8 +1825,10 @@
         : (c.kind === 'gearUp' ? '武器专属' : (c.kind === 'weaponNew' || c.kind === 'autoNew' ? '新装备' : '通用属性'))));
       var srcColor = (c.kind === 'evolve' || c.kind === 'evoPrep') ? C.gold
         : (c.kind === 'synergy' ? '#b197fc'
+        : ((c.kind === 'passive' || c.kind === 'passiveNew') && c.rare ? C.gold
+        : (c.kind === 'trade' ? '#ffb86b'
         : (c.kind === 'gearUp' || c.kind === 'gearLevel' ? '#8ecae6'
-        : (c.kind === 'weaponNew' || c.kind === 'autoNew' ? '#ff9f43' : '#8ce99a')));
+        : (c.kind === 'weaponNew' || c.kind === 'autoNew' ? '#ff9f43' : '#8ce99a')))));
       var tagW = measure(ctx, srcName, 8, false) + fs(12);
       rr(ctx, cx + cw - fs(14) - tagW, y + fs(12), tagW, fs(15), fs(7.5));
       ctx.fillStyle = U.rgba(srcColor, 0.16);
@@ -1780,69 +1893,102 @@
     }
   };
 
-  /* ---------------- 搜刮翻到主武器 ---------------- */
+  /* ---------------- 搜刮 / 空投翻到补给 ---------------- */
 
   /**
-   * 搜刮 / 空投里翻到一把主武器时问一句。
-   * 换掉会清空当前武器的等级与分支，是这一局里唯一还能改主武器的机会，
-   * 所以不能像普通补给那样直接生效。
+   * 搜刮 / 空投翻到一张卡时问一句「要不要收下」。
+   *
+   * 以前只有主武器会问（换掉要清空等级和分支，不能替玩家做主），
+   * 属性 / 分支 / 联动 / 自动装备直接生效 —— 玩家往往是在打完一波之后
+   * 才发觉构筑里多了点东西。现在一律先给卡面（名字 / 副标题 / 描述 / 底栏），
+   * 由玩家自己决定收不收：不要就什么都不发生，卡也不会占位置。
    */
   UI.lootAsk = function (g) {
     var ctx = P.ctx, W = P.W, H = P.H, run = g.run, p = run.p;
     var c = g.lootAsk;
     if (!c) return;
-    var nd = D.gear[c.id];
-    if (!nd) return;
+    /* 只有"手持武器换装"才需要写清"会失去什么" */
+    var nd = c.kind === 'weaponNew' ? D.gear[c.id] : null;
+    var isSwap = !!(nd && (nd.slot === 'main' || nd.slot === 'heavy'));
 
     ctx.fillStyle = 'rgba(6,8,12,0.8)';
     ctx.fillRect(0, 0, W, H);
     g.hits.length = 0;
 
     var pw = W * 0.86, px = (W - pw) / 2;
-    var ph = fs(232), py = Math.round((H - ph) / 2);
+    var ph = fs(isSwap ? 262 : 206), py = Math.round((H - ph) / 2);
     panel(ctx, px, py, pw, ph, 16, 'rgba(22,20,16,0.97)', 'rgba(255,209,102,0.6)');
 
-    text(ctx, '搜刮到主武器', W / 2, py + fs(26), 16, C.gold, 'center', true);
-    text(ctx, (g.lootFrom || '搜刮') + '翻出一把还能用的主武器', W / 2, py + fs(46), 9.5, C.dim, 'center', false);
+    text(ctx, (g.lootFrom === '空投' ? '空投补给' : '搜刮到补给'), W / 2, py + fs(26), 16, C.gold, 'center', true);
+    text(ctx, (c.src || '补给') + ' · 收下才会生效', W / 2, py + fs(46), 9.5, C.dim, 'center', false);
 
-    /* 新武器 */
-    var iy = py + fs(80);
-    badge(ctx, px + fs(38), iy, fs(24), nd.color, nd.rarity >= 4);
-    icon(ctx, nd.icon, px + fs(38), iy, fs(20), nd.color);
-    text(ctx, nd.name + '  Lv1', px + fs(66), iy - fs(5), 14, C.text, 'left', true);
-    text(ctx, '主武器 · ' + nd.cat, px + fs(66), iy + fs(11), 9.5, C.dim, 'left', false);
-    var dl = wrap2(ctx, nd.desc || '', pw - fs(88), 9.5);
-    text(ctx, dl[0], px + fs(66), iy + fs(28), 9.5, 'rgba(233,238,245,0.8)', 'left', false);
+    /* 卡面：和升级三选一同一套信息（图标 / 名字 / 副标题 / 描述 / 底栏） */
+    var iy = py + fs(78);
+    badge(ctx, px + fs(38), iy, fs(24), c.color, !!c.rare);
+    icon(ctx, c.icon, px + fs(38), iy, fs(20), c.color);
+    text(ctx, c.name, px + fs(66), iy - fs(7), 14, c.rare ? C.gold : C.text, 'left', true);
+    text(ctx, c.sub, px + fs(66), iy + fs(9), 9.5, c.rare ? C.gold : C.dim, 'left', false);
+    var dl = wrap2(ctx, c.desc || '', pw - fs(88), 9.5);
+    text(ctx, dl[0], px + fs(66), iy + fs(26), 9.5, 'rgba(233,238,245,0.8)', 'left', false);
+    if (dl[1]) {
+      text(ctx, dl[1], px + fs(66), iy + fs(38), 9.5, 'rgba(233,238,245,0.8)', 'left', false);
+    } else if (c.foot) {
+      text(ctx, c.foot, px + fs(66), iy + fs(40), 9.5, c.footColor || C.dim, 'left', true);
+    }
 
-    /* 当前主武器：把"会失去什么"写清楚 */
-    var cur = HS.Gear.mainEntry(p);
-    var cy = py + fs(146);
-    if (cur) {
-      var cd = D.gear[cur.id];
-      var nUp = 0, uk;
-      if (cur.up) {
-        for (uk in cur.up) {
-          if (cur.up[uk]) nUp += cur.up[uk];
+    /* 换手持武器：把"会失去什么"写清楚 */
+    if (isSwap) {
+      var cur = HS.Gear.mainEntry(p);
+      var cy = py + fs(176);
+      if (cur) {
+        var cd = D.gear[cur.id];
+        var nUp = 0, uk;
+        if (cur.up) {
+          for (uk in cur.up) {
+            if (cur.up[uk]) nUp += cur.up[uk];
+          }
         }
+        text(ctx, '当前：' + cd.name + ' Lv' + cur.lvl + (nUp ? '（已点分支 ' + nUp + ' 级）' : ''),
+          W / 2, cy, 10.5, C.text, 'center', false);
+        text(ctx, '换掉会连等级和分支一起清空', W / 2, cy + fs(18), 9,
+          'rgba(255,138,90,0.95)', 'center', false);
+      } else {
+        text(ctx, '当前没有手持武器', W / 2, cy, 10.5, C.dim, 'center', false);
       }
-      text(ctx, '当前：' + cd.name + ' Lv' + cur.lvl + (nUp ? '（已点分支 ' + nUp + ' 级）' : ''),
-        W / 2, cy, 10.5, C.text, 'center', false);
-      text(ctx, '换掉会连等级和分支一起清空', W / 2, cy + fs(18), 9,
-        'rgba(255,138,90,0.95)', 'center', false);
-    } else {
-      text(ctx, '当前没有主武器', W / 2, cy, 10.5, C.dim, 'center', false);
     }
 
     var bw = pw * 0.4, gap = pw * 0.08;
     var by = py + ph - fs(52);
     button(g, ctx, 'loot:no', px + pw * 0.06, by, bw, fs(38), '不要', 'ghost');
-    button(g, ctx, 'loot:yes', px + pw * 0.06 + bw + gap, by, bw, fs(38), '换上', 'primary');
+    button(g, ctx, 'loot:yes', px + pw * 0.06 + bw + gap, by, bw, fs(38),
+      isSwap ? '换上' : '收下', 'primary');
   };
 
   /* ---------------- 暂停 ---------------- */
 
   UI.pause = function (g) {
     var ctx = P.ctx, W = P.W, H = P.H;
+
+    /* ---- 暂停里的设置页 ----
+       只放四个开关（和标题页设置同一份控件），改完按"返回暂停"接着打。
+       清空命中区：底下的 HUD / 交互按钮不该在设置面板后面还能点到。 */
+    if (g.pauseSet) {
+      g.hits.length = 0;
+      ctx.fillStyle = 'rgba(6,8,12,0.92)';
+      ctx.fillRect(0, 0, W, H);
+      text(ctx, '设置', W / 2, H * 0.13, 22, C.text, 'center', true);
+      text(ctx, '暂停中 · 改完直接继续这一局', W / 2, H * 0.165, 10.5, C.dim, 'center', false);
+
+      var srx = W * 0.06, srw = W * 0.88, srh = fs(48);
+      var sy = H * 0.215;
+      sy = settingRows(g, ctx, srx, srw, srh, sy);
+
+      var bw2 = W * 0.6, bx2 = (W - bw2) / 2;
+      button(g, ctx, 'pause:back', bx2, Math.min(sy + srh + fs(24), H - fs(70)), bw2, fs(46),
+        '返回暂停', 'primary');
+      return;
+    }
+
     var p = g.run.p;
     ctx.fillStyle = 'rgba(6,8,12,0.84)';
     ctx.fillRect(0, 0, W, H);
@@ -1908,10 +2054,14 @@
       px + fs(46), rowY + fs(68), 9,
       synNames.length ? '#b197fc' : 'rgba(255,255,255,0.22)', 'left', false);
 
+    /* 四个按钮：原来只有 继续 / 重开 / 放弃，想调音量只能退出这一局重来。
+       起手高度跟着构筑面板走 —— 矮屏上 0.53H 会压到面板上 */
     var bw = W * 0.6, bx = (W - bw) / 2;
-    button(g, ctx, 'resume', bx, H * 0.55, bw, fs(50), '继续游戏', 'primary');
-    button(g, ctx, 'restart', bx, H * 0.55 + fs(62), bw, fs(44), '重新开始', 'ghost');
-    button(g, ctx, 'quit', bx, H * 0.55 + fs(116), bw, fs(44), '放弃并返回', 'danger');
+    var by = Math.max(H * 0.53, py + fs(150) + fs(14));
+    button(g, ctx, 'resume', bx, by, bw, fs(50), '继续游戏', 'primary');
+    button(g, ctx, 'pause:set', bx, by + fs(58), bw, fs(44), '设置', 'ghost', false, 'gauge');
+    button(g, ctx, 'restart', bx, by + fs(108), bw, fs(44), '重新开始', 'ghost');
+    button(g, ctx, 'quit', bx, by + fs(158), bw, fs(44), '放弃并返回', 'danger');
   };
 
   /* ---------------- 结算 ---------------- */

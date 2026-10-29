@@ -166,7 +166,8 @@
        这是它的身份，也是它"不弱"的来源：只靠接触判定的话，贴脸的怪在环内、
        球永远够不着 —— 实测单体 DPS 只有 0.6（光刃 2.5）。
        所以每 pulse 秒朝最近的几个目标放一道电弧（最多 pulseMax 个）：
-       环内优先，环外没人的话也电一个 90px 内最近的，保证单体也有输出。 */
+       环内优先，环外没人的话也电一个 90px 内最近的，保证单体也有输出。
+       同时**环内一整圈麻痹**（pulseStun）—— 球在过载，周围一圈都该短路。 */
     if (st.pulse) {
       a.pulseT = (a.pulseT || 0) + dt;
       if (a.pulseT >= st.pulse) {
@@ -174,6 +175,36 @@
         var pR = st.radius + (st.ball || 0) + 16;
         var maxT = Math.max(1, st.pulseMax || 4);
         var cand = [], pi, pe;
+
+        /* 过载放电 = 一圈电磁脉冲：**环内整圈麻痹**，不是只有挨到电弧的那几个。
+           以前放电只结算 pulseMax 个目标（4 个），旁边站着的照常往前挤 ——
+           球明明在过载，周围一圈却没反应，读起来不像"发电"。
+           半径和地上那圈电环一致（radius + 球体 + 16）。 */
+        var stunFor = st.pulseStun || 0;
+        if (stunFor > 0) {
+          for (pi = 0; pi < run.enemies.length; pi++) {
+            pe = run.enemies[pi];
+            if (pe.dead || !Game.sameLevel(pe)) continue;
+            var zx = pe.x - p.x, zy = pe.y - p.y;
+            if (zx * zx + zy * zy > pR * pR) continue;
+            /* 已经在更长的麻痹里就不缩短它 */
+            if (!(pe.stun > stunFor)) pe.stun = stunFor;
+            /* 麻痹本身没有别的表现（敌人只是停住），这里每人补两颗向外的电火星，
+               让"哪几只被电了"一眼看得出来 */
+            if (run.fx.length < 196) {
+              for (var sk = 0; sk < 2; sk++) {
+                var sa2 = U.rand(0, U.TAU);
+                run.fx.push({
+                  kind: 'p', x: pe.x + U.rand(-2, 2), y: pe.y - 2 + U.rand(-3, 1),
+                  vx: Math.cos(sa2) * U.rand(18, 46), vy: Math.sin(sa2) * U.rand(18, 46) - 10,
+                  life: U.rand(0.16, 0.26), max: 0.26,
+                  color: sk ? '#9ef0ff' : '#e8fbff', size: 1.4
+                });
+              }
+            }
+          }
+        }
+
         for (pi = 0; pi < run.enemies.length; pi++) {
           pe = run.enemies[pi];
           if (pe.dead || !Game.sameLevel(pe)) continue;
@@ -195,6 +226,8 @@
         var n2 = Math.min(maxT, cand.length);
         for (pi = 0; pi < n2; pi++) {
           var te = cand[pi].e;
+          /* 被电弧打到的也麻（含环外那个补位目标）：被电到就该有反应 */
+          if (stunFor > 0) te.stun = Math.max(te.stun || 0, stunFor);
           Game.hurtEnemy(te, st.dmg * 0.5,
             { tag: 'energy', dot: 1, ignoreArmor: 1, electric: 1 });
           if (run.chains.length < 60) {
@@ -354,7 +387,9 @@
 
     for (var i = 0; i < list.length; i++) {
       var e = list[i];
-      if (e.dead || !Game.sameLevel(e)) continue;
+      /* 水下的水鬼不参与环带判定：它连直伤都吃不到（hurtEnemy 拦了），
+         却会被挂上点燃 / 减速 —— 那就成了"看它不出来，出来就自带一身子弹效果" */
+      if (e.dead || e.submerged || !Game.sameLevel(e)) continue;
       var d = U.dist(e.x, e.y, p.x, p.y);
       if (Math.abs(d - R) > w + e.r) continue;
       hurt(e, (st.dps || 0) * 0.4, def.tags.indexOf('ice') >= 0 ? 'ice' : 'fire');
@@ -364,8 +399,9 @@
         e.slowT = Math.max(e.slowT || 0, 0.8 * (p.chillTime || 1));
       }
       if (def.tags.indexOf('fire') >= 0) {
-        e.burn = Math.max(e.burn || 0, 1.2);
-        e.burnDps = Math.max(e.burnDps || 0, (st.dps || 0) * 0.35 * (p.burnMul || 1));
+        /* 火焰环烧到的目标也会带着火跑出去 —— 走统一入口，
+           顺便吃到「燃烧专精」和刚点着的火星反馈 */
+        Game.ignite(e, (st.dps || 0) * 0.8 * (p.burnMul || 1), 1.8);
       }
       if (p.syn && p.syn.critBurn) e.synBurn = 1;
     }
@@ -561,12 +597,11 @@
         } else if (gid === 'flamenozzle') {
           for (var q2 = 0; q2 < run.enemies.length; q2++) {
             var e3 = run.enemies[q2];
-            if (e3.dead) continue;
+            if (e3.dead || e3.submerged) continue;
             var d3 = U.dist(e3.x, e3.y, dv.x, dv.y);
             if (d3 > st.range + e3.r) continue;
             hurt(e3, st.dmg, 'fire');
-            e3.burn = Math.max(e3.burn || 0, 1.2);
-            e3.burnDps = Math.max(e3.burnDps || 0, st.dmg * 0.4);
+            Game.ignite(e3, st.dmg * 0.9 * (p.burnMul || 1), 1.8);
           }
           /* 喷口是"贴地喷火"：往四周喷一圈火苗，不然只有伤害数字，看不见在烧 */
           if (run.fx.length < 200) {
@@ -583,9 +618,11 @@
               });
             }
           }
-          if (run.t - (dv.sfxT || -1) > 0.16) {
+          /* 喷口同理：0.16s 太密，改成 0.42s 一段维持音（和手持喷火同一套听感） */
+          var fgap = run.t - (dv.sfxT || -9);
+          if (fgap > 0.42) {
             dv.sfxT = run.t;
-            HS.Audio.flame();
+            HS.Audio.flame(fgap > 0.7);
           }
         } else {
           var cnt = Math.max(1, Math.round(st.count));
@@ -607,7 +644,7 @@
           dv.tick -= 0.35;
           for (var j = 0; j < run.enemies.length; j++) {
             var ez = run.enemies[j];
-            if (ez.dead || !Game.sameLevel(ez)) continue;
+            if (ez.dead || ez.submerged || !Game.sameLevel(ez)) continue;
             var dzz = U.dist(ez.x, ez.y, dv.x, dv.y);
             if (dzz > dv.r + ez.r) continue;
             Game.hurtEnemy(ez, dv.dps * 0.35, { silent: true, dot: 1, ignoreArmor: 1, tag: dv.effect === 'fire' ? 'fire' : 'auto' });
@@ -616,8 +653,7 @@
               ez.slowT = Math.max(ez.slowT || 0, 0.7 * (p.chillTime || 1));
             }
             if (dv.effect === 'fire') {
-              ez.burn = Math.max(ez.burn || 0, 1.2);
-              ez.burnDps = Math.max(ez.burnDps || 0, dv.dps * 0.3 * (p.burnMul || 1));
+              Game.ignite(ez, dv.dps * 0.7 * (p.burnMul || 1), 1.8);
             }
             if (dv.effect === 'ice') ez.synFrozen = 1;
             if (dv.pull) {

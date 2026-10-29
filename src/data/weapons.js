@@ -13,6 +13,10 @@
  *   rarity  1~5，用于抽取权重与卡面颜色
  *   up      专属升级分支 id 数组（不写则按 fam 模板生成，见 upgrades.js）
  *   move    移动速度乘数（重型武器普遍 < 1）
+ *   noCap   1 = 不限目标数（扇面里的敌人全吃），见 gear.js 的 Gear.global
+ *   edge    1 = 带刀刃的冷兵器 → 能拿「锯齿刃口（出血）」这条专属分支。
+ *           光剑 / 能量鞭 / 盾牌 / 冲击波发生器这类打能量与冲击的不算
+ *   pen     自带破甲（0~1），走 hurtEnemy 的护甲结算
  *   tags    联动 / 限制用的标签
  */
 (function () {
@@ -29,7 +33,7 @@
   D.iconAlias = {
     pistol: 'pistol', revolver: 'pistol', smg: 'smg',
     rifle: 'rifle', lmg: 'rifle', minigun: 'minigun', sniper: 'sniper',
-    shotgun: 'shotgun', launcher: 'launcher', mortar: 'launcher', harpoon: 'launcher',
+    shotgun: 'shotgun', launcher: 'launcher', harpoon: 'launcher',
     bow: 'bow', crossbow: 'bow', flamer: 'flamer', laser: 'laser',
     plasma: 'laser', railgun: 'laser', tesla: 'tesla',
     saber: 'blade', katana: 'blade', greatsword: 'blade', twinblades: 'blade',
@@ -40,7 +44,11 @@
     molotov: 'molotov', grenade: 'grenade', frost: 'frost',
     beacon: 'mine', mine: 'mine', shockwave: 'ring',
     autoloader: 'amp', syringe: 'syringe', drone: 'drone',
-    firering: 'ring', frostring: 'ring', railorb: 'orb', gravitysat: 'orb'
+    /* 两个环各自的图标（火焰环 = 环形火，冰霜环 = 环形冰晶）。
+       以前这里都映射到 'ring'，而 icons.js 里根本没有 'ring' 这个点阵 ——
+       结果两件环的卡面都退回默认图形，长得一模一样。 */
+    firering: 'firering', frostring: 'icerim',
+    railorb: 'orb', gravitysat: 'orb'
   };
 
   var BASE_KEYS = {
@@ -180,7 +188,7 @@
     {
       id: 'flamer', name: '火焰喷射器', art: 'flamer', fam: 'energy', mech: 'flame', rarity: 3,
       desc: '持续喷火，烧穿贴脸的尸群', tags: ['fire'],
-      base: { cd: 0.16, dmg: 5.5, range: 92, arc: 0.52, dps: 0, dur: 2 }, g: { dmg: 0.16, cd: 0.03, range: 0.03 }
+      base: { cd: 0.16, dmg: 4.6, range: 92, arc: 0.52, dps: 0, dur: 2 }, g: { dmg: 0.16, cd: 0.03, range: 0.03 }
     },
     {
       /* 冷冻射流：直伤比火焰低一档，换来的是一整片减速 + 冻结标记。
@@ -189,7 +197,7 @@
          art 用 flamer 的手持喷嘴，icon 走 frost，不新增美术。 */
       id: 'cryo', name: '液氮喷枪', art: 'flamer', icon: 'frost', fam: 'energy', mech: 'flame',
       rarity: 3, elem: 'ice', desc: '低温射流冻住一片，越冻越脆', tags: ['ice', 'energy'],
-      base: { cd: 0.16, dmg: 4.6, range: 88, arc: 0.44, slow: 0.45, dur: 1.4 },
+      base: { cd: 0.16, dmg: 3.8, range: 88, arc: 0.44, slow: 0.50, dur: 1.4 },
       g: { dmg: 0.15, cd: 0.03, range: 0.03, slow: 0.02 }
     },
     {
@@ -217,10 +225,11 @@
          不经过 rate / cdr 折算，所以加快攻速不会让它跳得更密。
          宽度比激光步枪粗一档（8 vs 5），红色判定线一眼能认出是哪把枪。 */
       id: 'redlaser', name: '红莲切割者', art: 'laser', fam: 'energy', mech: 'beam',
-      rarity: 4, color: '#ff3b30', sustainBeam: 1, desc: '持续不断的红色光束，不吃射速',
+      rarity: 4, color: '#ff3b30', sustainBeam: 1,
+      desc: '持续不断的红色光束。不吃射速——但多出来的攻速会按六折折算成伤害',
       tags: ['energy'],
-      base: { cd: 0.08, dmg: 2.0, range: 235, pierce: 2, width: 8 },
-      g: { dmg: 0.16, range: 0.03, width: 0.5 }
+      base: { cd: 0.08, dmg: 2.2, range: 235, pierce: 2, width: 8 },
+      g: { dmg: 0.21, range: 0.03, width: 0.5 }
     }
   ]);
 
@@ -229,24 +238,38 @@
     tags: ['melee']
   }, [
     {
-      id: 'saber', name: '光剑', art: 'saber', rarity: 3, desc: '高频刃口，一次能扫开一排',
+      /* 光剑不是"一把金属剑"：刃身是能量场，所以给独立青色 + 专属 art 分支
+         （render 的 ART_KIND.saber / Audio 的 saber 音色都按 art 走）。
+         刀光、音色、握持形态三样全部和武士刀区分开，玩家一眼能认出是哪把。 */
+      id: 'saber', name: '光剑', art: 'saber', rarity: 3, color: '#7ee0ff',
+      desc: '高频刃口，一次能扫开一排',
       base: { cd: 0.42, dmg: 18, range: 36, arc: 1.2, targets: 3 }, g: { dmg: 0.18, cd: 0.05, targets: 0.5 }
     },
     {
-      id: 'katana', name: '武士刀', art: 'katana', desc: '出手极快的斩击',
-      base: { cd: 0.34, dmg: 13, range: 30, arc: 1.0, targets: 2 }, g: { dmg: 0.16, cd: 0.06, targets: 0.5 }
+      /* 一刀扫过身前一片：noCap = 扇形内的敌人全吃，不再点名 N 个人。
+         目标数封顶的武器在尸堆里永远只打得到最靠前的两个，
+         这是近战"贴脸还打不动"的根子。 */
+      id: 'katana', name: '武士刀', art: 'katana', noCap: 1, edge: 1,
+      desc: '出手极快，一刀扫过身前一片',
+      base: { cd: 0.34, dmg: 15, range: 30, arc: 1.0, targets: 99 },
+      g: { dmg: 0.16, cd: 0.06, arc: 0.035 }
     },
     {
-      id: 'greatsword', name: '大剑', art: 'greatsword', rarity: 3, desc: '大范围横扫，前摇略长',
+      id: 'greatsword', name: '大剑', art: 'greatsword', rarity: 3, edge: 1, desc: '大范围横扫，前摇略长',
       base: { cd: 0.86, dmg: 34, range: 40, arc: 1.6, targets: 4 }, g: { dmg: 0.2, cd: 0.05, arc: 0.03 }
     },
     {
-      id: 'twinblades', name: '双刀', art: 'twinblades', desc: '极快的双段连斩',
-      base: { cd: 0.22, dmg: 8, range: 28, arc: 0.85, targets: 2 }, g: { dmg: 0.15, cd: 0.05 }
+      /* 极快的双段连斩：伤害和攻速一起提，同时改成不限目标数，
+         不然"saber 一刀砍三个、双刀只能砍两个"永远说不通 */
+      id: 'twinblades', name: '双刀', art: 'twinblades', noCap: 1, edge: 1,
+      desc: '极快的双段连斩，刀光扫过一整片',
+      base: { cd: 0.2, dmg: 9, range: 28, arc: 0.85, targets: 99 },
+      g: { dmg: 0.15, cd: 0.05, arc: 0.03 }
     },
     {
-      id: 'axe', name: '战斧', art: 'axe', rarity: 2, desc: '劈砍带击退，适合开道',
-      base: { cd: 0.7, dmg: 28, range: 32, arc: 1.15, targets: 3, knock: 8 }, g: { dmg: 0.19, cd: 0.05 }
+      /* 战斧的卖点是"开道"：伤害和击退一起提，被打飞的那一下也算收益 */
+      id: 'axe', name: '战斧', art: 'axe', rarity: 2, edge: 1, desc: '劈砍带击退，一斧能把人抡回巷子里',
+      base: { cd: 0.7, dmg: 32, range: 32, arc: 1.15, targets: 3, knock: 12 }, g: { dmg: 0.19, cd: 0.05 }
     },
     {
       id: 'warhammer', name: '战锤', art: 'hammer', rarity: 3, desc: '一击砸出冲击波，慢但极重',
@@ -254,22 +277,22 @@
       onHit: 'shock'
     },
     {
-      id: 'spear', name: '长矛', art: 'spear', mech: 'thrust',
+      id: 'spear', name: '长矛', art: 'spear', mech: 'thrust', edge: 1,
       desc: '直刺一条线，只打正前方；枪身越长，刺出的宽度也越宽',
       base: { cd: 0.55, dmg: 20, range: 48, targets: 3 }, g: { dmg: 0.18, cd: 0.05, targets: 0.5 }
     },
     {
-      id: 'chainsaw', name: '链锯', art: 'chainsaw', rarity: 3, mech: 'drill',
+      id: 'chainsaw', name: '链锯', art: 'chainsaw', rarity: 3, mech: 'drill', edge: 1,
       desc: '贴上去就不断绞，持续伤害', tags: ['melee', 'saw'],
       base: { cd: 0.12, dmg: 8, range: 32, arc: 0.8, targets: 2 }, g: { dmg: 0.16, cd: 0.02 }
     },
     {
-      id: 'voltsaw', name: '电锯剑', art: 'chainsaw', rarity: 3, mech: 'drill',
+      id: 'voltsaw', name: '电锯剑', art: 'chainsaw', rarity: 3, mech: 'drill', edge: 1,
       desc: '锯刃带电，切割同时放电', tags: ['melee', 'energy'],
       base: { cd: 0.3, dmg: 12, range: 32, arc: 0.9, targets: 3, chains: 1 }, g: { dmg: 0.17, cd: 0.04 }
     },
     {
-      id: 'scythe', name: '长柄镰刀', art: 'scythe', rarity: 4, desc: '巨大弧线收割半个屏幕的近身敌',
+      id: 'scythe', name: '长柄镰刀', art: 'scythe', rarity: 4, edge: 1, desc: '巨大弧线收割半个屏幕的近身敌',
       base: { cd: 0.78, dmg: 26, range: 44, arc: 2.0, targets: 5 }, g: { dmg: 0.2, cd: 0.05, arc: 0.04 }
     }
   ]);
@@ -279,24 +302,37 @@
     tags: ['melee']
   }, [
     {
-      id: 'gauntlet', name: '拳套', art: 'fist', desc: '极快的连打，单点爆发',
-      base: { cd: 0.25, dmg: 10, range: 24, arc: 0.9, targets: 1, knock: 5, radius: 22 }, g: { dmg: 0.16, cd: 0.05 }
+      /* 拳套：单点爆发 + 不限目标数 —— 一拳打出的一圈冲击波本来就该打到所有人。
+         特效走 Gear.swing 的 punch 冲击环，和"只打一个"的观感区分开 */
+      id: 'gauntlet', name: '拳套', art: 'fist', noCap: 1, punch: 1, combo: 1,
+      desc: '极快的连打，不歇手就越打越重',
+      base: { cd: 0.25, dmg: 13, range: 24, arc: 0.9, targets: 99, knock: 5, radius: 22 },
+      g: { dmg: 0.16, cd: 0.05, arc: 0.03 }
     },
     {
-      id: 'drill', name: '机械钻头', art: 'drill', rarity: 3, mech: 'drill', desc: '钻穿单个目标，破甲极高',
-      base: { cd: 0.18, dmg: 14, range: 24, arc: 0.4, targets: 1, pierce: 2 }, g: { dmg: 0.17, cd: 0.03 }
+      /* 机械钻头：以前 base.pierce 对近战是**死字段**（Gear.global 只吃
+         被动穿透，不读 def.base.pierce），描述写的"破甲极高"根本没实现。
+         现在改成两件真事：不限目标数（钻穿一整排）+ 真·破甲（pen 走
+         hurtEnemy 的护甲结算），不再靠一个没人读的字段装样子。 */
+      id: 'drill', name: '机械钻头', art: 'drill', rarity: 3, mech: 'drill',
+      noCap: 1, pen: 0.8, rift: 1, lance: 1, edge: 1,
+      desc: '直线钻穿一整排，钻开的裂口让目标更脆',
+      base: { cd: 0.18, dmg: 14, range: 40, arc: 0.4, targets: 99 },
+      g: { dmg: 0.17, cd: 0.03, range: 0.02 }
     },
     {
       id: 'whip', name: '能量鞭', art: 'whip', rarity: 3, desc: '长距离横扫，控场很好',
       base: { cd: 0.5, dmg: 12, range: 62, arc: 1.4, targets: 4 }, g: { dmg: 0.17, cd: 0.05, targets: 0.5 }
     },
     {
-      id: 'shieldaxe', name: '盾斧', art: 'shieldaxe', rarity: 3, desc: '攻守一体：挥砍同时挡下伤害',
-      base: { cd: 0.8, dmg: 26, range: 30, arc: 1.2, targets: 2, knock: 6 }, g: { dmg: 0.19, cd: 0.05 },
+      id: 'shieldaxe', name: '盾斧', art: 'shieldaxe', rarity: 3, noCap: 1, edge: 1,
+      desc: '攻守一体：一斧扫开一圈，同时挡下伤害',
+      base: { cd: 0.8, dmg: 31, range: 30, arc: 1.2, targets: 99, knock: 6 },
+      g: { dmg: 0.19, cd: 0.05, arc: 0.03 },
       block: 0.22
     },
     {
-      id: 'glaive', name: '回旋刃', art: 'glaive', rarity: 3, mech: 'boomerang',
+      id: 'glaive', name: '回旋刃', art: 'glaive', rarity: 3, mech: 'boomerang', edge: 1,
       desc: '掷出后回旋，去程回程都割人',
       base: { cd: 0.9, dmg: 20, range: 165, speed: 260, pierce: 4 }, g: { dmg: 0.18, cd: 0.05 }
     }
@@ -405,30 +441,39 @@
     fam: 'melee', mech: 'melee', color: '#ced4da', rarity: 1, tags: ['melee']
   }, [
     {
-      id: 'dagger', name: '战斗匕首', art: 'knife', desc: '快速短刺，贴脸补刀',
-      base: { cd: 0.5, dmg: 12, range: 26, arc: 0.9, targets: 1 }, g: { dmg: 0.16, cd: 0.05 }
+      /* 战斗匕首：贴身割一圈，伤害和攻速一起提，不然"快速短刺"只是听着快 */
+      id: 'dagger', name: '战斗匕首', art: 'knife', noCap: 1, edge: 1,
+      desc: '贴脸割一圈，出手极快',
+      base: { cd: 0.45, dmg: 15, range: 26, arc: 0.9, targets: 99 },
+      g: { dmg: 0.16, cd: 0.05, arc: 0.03 }
     },
     {
-      id: 'shortsword', name: '短剑', art: 'shortsword', rarity: 2, desc: '更长的刃，一次能带到两个',
+      id: 'shortsword', name: '短剑', art: 'shortsword', rarity: 2, edge: 1, desc: '更长的刃，一次能带到两个',
       base: { cd: 0.6, dmg: 16, range: 30, arc: 1.1, targets: 2 }, g: { dmg: 0.17, cd: 0.05 }
     },
     {
-      id: 'stunbaton', name: '电击警棍', art: 'baton', rarity: 2, desc: '敲中就麻，控住冲脸的',
-      base: { cd: 0.8, dmg: 8, range: 28, arc: 0.9, targets: 2, stun: 0.8 }, g: { dmg: 0.15, cd: 0.05, stun: 0.08 }
+      id: 'stunbaton', name: '电击警棍', art: 'baton', rarity: 2, desc: '敲中就麻，控住冲脸的，一棍能麻两个',
+      base: { cd: 0.8, dmg: 13, range: 28, arc: 0.9, targets: 2, stun: 1.0 }, g: { dmg: 0.15, cd: 0.05, stun: 0.08 }
     },
     {
-      id: 'riotshield', name: '战斗盾牌', art: 'shield', rarity: 3, desc: '顶着盾打，减少正面伤害',
-      base: { cd: 1.0, dmg: 10, range: 28, arc: 1.0, targets: 2, knock: 8 }, g: { dmg: 0.16, cd: 0.05 },
-      block: 0.25
+      id: 'riotshield', name: '战斗盾牌', art: 'shield', rarity: 3, counter: 0.9,
+      desc: '顶着盾打：挡下的伤害会反震回去',
+      base: { cd: 1.0, dmg: 14, range: 28, arc: 1.0, targets: 2, knock: 8 }, g: { dmg: 0.16, cd: 0.05 },
+      block: 0.30
     },
     {
-      id: 'energyshield', name: '能量盾', art: 'eshield', rarity: 3, desc: '能量护盾，挡伤更多',
-      base: { cd: 1.2, dmg: 8, range: 26, arc: 1.0, targets: 2 }, g: { dmg: 0.15, cd: 0.05 },
-      block: 0.32
+      id: 'energyshield', name: '能量盾', art: 'eshield', rarity: 3, counter: 0.9,
+      desc: '能量护盾：挡伤更多，并反震一圈冲击',
+      base: { cd: 1.05, dmg: 14, range: 26, arc: 1.0, targets: 2 }, g: { dmg: 0.15, cd: 0.05 },
+      block: 0.36
     },
     {
-      id: 'powerfist', name: '机械拳套', art: 'fist', rarity: 2, desc: '重拳击退，把人打回巷子',
-      base: { cd: 0.7, dmg: 22, range: 26, arc: 0.9, targets: 1, knock: 12 }, g: { dmg: 0.18, cd: 0.05 }
+      /* 机械拳套：本来只打 1 个人，一轮"重拳 + 击退"里其实只赚一次伤害。
+         现在和不限目标数的拳头一样打身前一圈，特效走 punch 冲击环 */
+      id: 'powerfist', name: '机械拳套', art: 'fist', rarity: 2, noCap: 1, punch: 1,
+      desc: '重拳砸出一圈冲击，把人打回巷子',
+      base: { cd: 0.7, dmg: 27, range: 26, arc: 0.9, targets: 99, knock: 12 },
+      g: { dmg: 0.18, cd: 0.05, arc: 0.03 }
     },
     {
       id: 'grapnel', name: '链锁钩爪', art: 'harpoon', rarity: 3, mech: 'bullet', desc: '甩出钩爪，把远处的拽到面前',
@@ -438,7 +483,7 @@
       onHit: 'pull'
     },
     {
-      id: 'portdrill', name: '便携钻头', art: 'drill', rarity: 2, mech: 'drill', desc: '近距离持续钻孔',
+      id: 'portdrill', name: '便携钻头', art: 'drill', rarity: 2, mech: 'drill', edge: 1, desc: '近距离持续钻孔',
       base: { cd: 0.2, dmg: 10, range: 24, arc: 0.4, targets: 1 }, g: { dmg: 0.16, cd: 0.03 }
     }
   ]);
@@ -452,8 +497,8 @@
     },
     {
       id: 'shockwave', name: '冲击波发生器', art: 'shockwave', rarity: 3, mech: 'melee',
-      desc: '周期性震开身边所有敌人', fam: 'melee',
-      base: { cd: 5, dmg: 20, range: 58, arc: 3.15, targets: 99, knock: 14, stun: 0.5 }, g: { dmg: 0.18, cd: 0.05, range: 0.03 }
+      charge: 1, desc: '蓄势震动：圈里没人就一直压着，越憋越狠', fam: 'melee',
+      base: { cd: 4.2, dmg: 24, range: 58, arc: 3.15, targets: 99, knock: 14, stun: 0.5 }, g: { dmg: 0.18, cd: 0.05, range: 0.03 }
     },
     {
       id: 'autoloader', name: '自动装填装置', art: 'autoloader', rarity: 3, mech: 'buff',
@@ -485,16 +530,6 @@
       base: { cd: 3.0, dmg: 110, radius: 58, range: 300, speed: 190 }, g: { dmg: 0.2, cd: 0.06, radius: 1.6 }
     },
     {
-      id: 'mortar', name: '迫击炮', art: 'mortar', fam: 'explosive', mech: 'lob', tube: 1,
-      move: 0.72, desc: '抛射到远处落点，覆盖一整片', tags: ['explosive', 'heavy'],
-      base: { cd: 2.9, dmg: 82, radius: 68, range: 300 }, g: { dmg: 0.18, cd: 0.05, radius: 1.6 }
-    },
-    {
-      id: 'plasmacannon', name: '等离子炮', art: 'plasma', fam: 'energy', mech: 'beam',
-      move: 0.8, desc: '高热光束穿透一排，附带小范围爆炸', tags: ['energy', 'heavy'],
-      base: { cd: 1.6, dmg: 70, range: 290, pierce: 3, width: 10, radius: 26 }, g: { dmg: 0.2, cd: 0.05, pierce: 0.5 }
-    },
-    {
       id: 'railgun', name: '电磁轨道炮', art: 'railgun', fam: 'energy', mech: 'rail',
       move: 0.76, desc: '一枪贯穿全屏，前摇与冷却都很长', tags: ['energy', 'heavy'],
       base: { cd: 2.6, dmg: 140, range: 380, pierce: 99, width: 8 }, g: { dmg: 0.24, cd: 0.05 }
@@ -515,7 +550,7 @@
       base: { cd: 0.72, dmg: 55, range: 56, arc: 1.9, targets: 6 }, g: { dmg: 0.2, cd: 0.05, arc: 0.03 }
     },
     {
-      id: 'heavychainsaw', name: '重型链锯', art: 'chainsaw', fam: 'melee', mech: 'drill',
+      id: 'heavychainsaw', name: '重型链锯', art: 'chainsaw', fam: 'melee', mech: 'drill', edge: 1,
       move: 0.74, desc: '贴住就是绞肉机，代价是几乎跑不动', tags: ['melee', 'saw', 'heavy'],
       base: { cd: 0.15, dmg: 18, range: 38, arc: 1.0, targets: 3 }, g: { dmg: 0.17, cd: 0.02 }
     }
@@ -620,7 +655,17 @@
     },
     redlaser: {
       id: 'redlaser_x', name: '熔核过载', req: { stat: 'power', statLvl: 3 },
-      desc: '光束烧到发白，一路切穿车壳与尸群', mul: { dmg: 1.45, width: 1.3, range: 1.15 }
+      /* 穿透**不是**它的卖点：本体那道光束本来就是沿直线打穿一整排，
+         再给 pierce 只是把"本来就能做的事"重复卖一次。
+         进化换成两样本体没有的：
+           ① melt —— 同一目标被连续照射会越来越烫（每跳 +9%、最多 8 层、断火 0.5s 清零）；
+           ② 独立音色 meltlaser —— 从"一束脉冲"变成"一直在烧"（见 audio.js）。
+         宽度 x1.75（原来 1.3）：进化之后是**一道很粗的持续激光**，
+         数量恒为 1（Gear.beam 对 sustainBeam 的钳制），粗是它唯一的形态语言。 */
+      desc: '一道不断的光束烧到发白。不再需要开火：连着照会越来越烫',
+      color: '#ff9b82',
+      flag: 'melt',
+      mul: { dmg: 1.45, width: 1.75, range: 1.15 }
     },
     saber: {
       id: 'saber_x', name: '剑气风暴', req: { stat: 'haste', statLvl: 2 },
@@ -629,7 +674,7 @@
     },
     katana: {
       id: 'katana_x', name: '居合', req: { stat: 'haste', statLvl: 3 },
-      desc: '快到只剩残影，斩击几乎不间断', mul: { dmg: 1.35, cd: 0.45, targets: 1 }
+      desc: '快到只剩残影，斩击几乎不间断', mul: { dmg: 1.35, cd: 0.45, arc: 0.12 }
     },
     greatsword: {
       id: 'greatsword_x', name: '破军', req: { stat: 'power', statLvl: 3 },
@@ -669,7 +714,7 @@
     },
     drill: {
       id: 'drill_x', name: '地核钻头', req: { stat: 'pierce', statLvl: 2 },
-      desc: '钻穿一切，护甲形同虚设', mul: { dmg: 1.7, pierce: 4, cd: 0.9 }
+      desc: '钻穿一切，护甲形同虚设', mul: { dmg: 1.7, range: 1.15, cd: 0.9 }
     },
     whip: {
       id: 'whip_x', name: '千鞭', req: { stat: 'haste', statLvl: 2 },
@@ -682,6 +727,30 @@
     glaive: {
       id: 'glaive_x', name: '回旋风暴', req: { stat: 'split', statLvl: 1 },
       desc: '一次掷出三枚，回程也不落空', mul: { dmg: 1.3, count: 2, cd: 0.85 }
+    },
+
+    /* ---------------- 副槽近战：补齐四件"永远停在数值上"的 ----------------
+     * 匕首 / 短剑 / 机械拳套 / 便携钻头 之前没有进化，副槽抽到它们等于少一个质变点。
+     * 四条都挂在已有机制上（sure / echo / ring / core），不新增系统。 */
+    dagger: {
+      id: 'dagger_x', name: '穿心', req: { stat: 'crit', statLvl: 2 },
+      desc: '同一目标连中三下，第四下必定暴击',
+      mul: { dmg: 1.45, cd: 0.85 }, flag: 'sure'
+    },
+    shortsword: {
+      id: 'shortsword_x', name: '双刃', req: { stat: 'haste', statLvl: 2 },
+      desc: '每次挥砍追加一段二段斩',
+      mul: { dmg: 1.3, cd: 0.9 }, flag: 'echo'
+    },
+    powerfist: {
+      id: 'powerfist_x', name: '裂地', req: { stat: 'blast', statLvl: 2 },
+      desc: '冲击环变成真实判定，一圈内的敌人再吃半刀',
+      mul: { dmg: 1.35, cd: 0.9 }, flag: 'ring'
+    },
+    portdrill: {
+      id: 'portdrill_x', name: '钻核', req: { stat: 'pierce', statLvl: 1 },
+      desc: '每次钻击在地面留下还在转的钻核，持续 2 秒',
+      mul: { dmg: 1.4, cd: 0.9 }, flag: 'core'
     },
 
     /* ---------------- 副武器 ----------------
@@ -726,6 +795,11 @@
       id: 'shockwave_x', name: '冲击核心', req: { stat: 'armor', statLvl: 1 },
       desc: '震荡半径更大，附带一圈爆裂', mul: { dmg: 1.4, radius: 1.35, knock: 8, stun: 0.2 }, flag: 'shock'
     },
+    energyshield: {
+      id: 'energyshield_x', name: '谐振壁垒', req: { stat: 'armor', statLvl: 2 },
+      desc: '格挡反击扩成一圈谐振冲击，挡得更多也打得更远',
+      mul: { dmg: 1.4, range: 1.2 }, block: 0.45
+    },
     stunbaton: {
       id: 'stunbaton_x', name: '高压警棍', req: { stat: 'haste', statLvl: 1 },
       desc: '敲中即麻，还会把电流传给旁边的人', mul: { dmg: 1.4, stun: 0.4, targets: 1 }, flag: 'shock'
@@ -736,38 +810,56 @@
     },
 
     /* ---------------- 重型武器 ----------------
-     * 重型本来就占两格，进化给的是"值回这两格"的终点 */
+     * 重型本来就占两格，进化给的是"值回这两格"的终点。
+     * **每条进化都要有自己的机制 / 特效，不能只是本体的数值放大** ——
+     * 见文件末尾的「进化质变登记」，smoke 会核对每个 flag 都有消费方。 */
     heavymg: {
       id: 'heavymg_x', name: '弹幕墙', req: { stat: 'pierce', statLvl: 2 },
-      desc: '弹链连穿三人，火力覆盖整条街', mul: { dmg: 1.3, pierce: 2, cd: 0.8 }
+      /* 360° 螺旋弹幕：不再朝目标打，而是每发甩出一整圈（36 发），相位逐发旋转。
+         节奏从 0.056s 放到 0.30s：一圈 36 发 × 3.3 环/秒 = 110 发/秒，
+         比本体（14 发/秒）密得多，但**打在同一个目标上的比例更低**，
+         所以单发伤害按 3.25 倍补偿（实测：单体 149 / 扇面 1086 / 环形 1189）。 */
+      desc: '不再瞄准：每发甩出一整圈弹幕，相位逐发旋转，360° 没有死角',
+      mul: { dmg: 3.25, cd: 4.3, pierce: 1 }, flag: 'spiral', spiralN: 36
     },
     gatling: {
       id: 'gatling_x', name: '转管风暴', req: { stat: 'haste', statLvl: 2 },
-      desc: '转起来之后射速攀升得更快、更狠', mul: { dmg: 1.35, cd: 0.86 }, flag: 'spinup'
+      /* 子弹变大 + 伤害再抬一档：转速拉满之后"一梭子砸穿一片"的感觉。
+         两个 flag 一起挂：spinup 是它的本体机制，bigBullet 才是进化的新东西。 */
+      desc: '转起来之后射速攀升得更快、弹丸更大更狠',
+      mul: { dmg: 1.6, cd: 0.86 }, flag: 'spinup', flags: { bigBullet: 1 }
     },
     heavyrpg: {
       id: 'heavyrpg_x', name: '焚城', req: { stat: 'blast', statLvl: 2 },
       desc: '战斗部塞满破片，一发掀掉半条车道', mul: { dmg: 1.3, radius: 1.3, count: 1 }, flag: 'shard'
     },
-    mortar: {
-      id: 'mortar_x', name: '火雨', req: { stat: 'blast', statLvl: 2 },
-      desc: '一次抛射三发，覆盖一整个街区', mul: { dmg: 1.25, radius: 1.25, count: 2 }
-    },
     railgun: {
       id: 'railgun_x', name: '湮灭炮', req: { stat: 'pierce', statLvl: 2 },
-      desc: '弹道加宽，整列敌人一起汽化', mul: { dmg: 1.4, width: 1.6, pierce: 10 }
-    },
-    plasmacannon: {
-      id: 'plasmacannon_x', name: '恒星炮', req: { stat: 'blast', statLvl: 2 },
-      desc: '光柱更宽，命中处炸成一片火海', mul: { dmg: 1.4, width: 1.5, radius: 1.4 }
+      /* 从"一发快枪"变成"蓄力巨炮"：
+         ① 宽度 8 → 27（巨粗），穿透照旧全屏；
+         ② 3 秒蓄力（`chargeTime`），蓄力时脚下有一圈收束光环 + 芯部聚能；
+         ③ 开火后光柱不立刻消失，像冲击波一样往外扩着淡出 0.6 秒（`linger`）。
+         cd 不再是 2.36：蓄力本身就是节奏，`mul.cd` 只作为"蓄满之后的最小间隔"兜底。
+         伤害 ×2.4 是补"每 3 秒才一发"的节奏损失（实测单体 ≈ 本体 Lv5 水平，
+         扇面 / 直线因为巨粗而明显更高）。 */
+      desc: '3 秒蓄力，打出一道巨粗的光柱；开火后光柱还会向外扩散着淡去',
+      mul: { dmg: 2.4, width: 3.4, pierce: 10, cd: 1.15 },
+      chargeTime: 3, linger: 0.6
     },
     heavyflamer: {
       id: 'heavyflamer_x', name: '炼狱', req: { stat: 'power', statLvl: 3 },
-      desc: '火舌拉到极限，整条街都在烧', mul: { dmg: 1.5, range: 1.3, arc: 1.2 }
+      /* 火舌扫过的地方会留一片火（`inferno`，消费方在 Gear.flame）：
+         不然"整条街都在烧"只是一句数值描述 */
+      desc: '火舌拉到极限，烧过的地方还留着一片火', mul: { dmg: 1.5, range: 1.3, arc: 1.2 },
+      flags: { inferno: 1 }
     },
     siegecrossbow: {
       id: 'siegecrossbow_x', name: '攻城弩阵', req: { stat: 'pierce', statLvl: 2 },
-      desc: '八矢齐射，箭箭贯穿', mul: { dmg: 1.25, count: 2, pierce: 2 }
+      /* 每支箭都带爆炸，而且**穿透时也炸**（在 combat.js 的弹体命中处结算）。
+         补 cd 0.9 之后每箭约 1.04x；再收一点散布（0.24 → 0.13）——
+         六箭铺得太开，实测打在同一个目标上的只有一两支。 */
+      desc: '八矢齐射，每支箭命中即炸 —— 穿透过去的每一段都炸',
+      mul: { dmg: 1.55, count: 2, pierce: 2, cd: 0.9, spread: 0.55 }, flag: 'arrowBoom'
     },
     giantsaber: {
       id: 'giantsaber_x', name: '剑刃风暴', req: { stat: 'haste', statLvl: 2 },
@@ -775,7 +867,9 @@
     },
     heavychainsaw: {
       id: 'heavychainsaw_x', name: '血肉磨坊', req: { stat: 'power', statLvl: 3 },
-      desc: '锯链转到底，啃进去就不松口', mul: { dmg: 1.5, targets: 1, cd: 0.85 }
+      /* 进化自带"撕裂"（`rend`，消费方在 Gear.stat）：不点「锯齿刃口」也有流血 */
+      desc: '锯链转到底，咬住就撕开伤口', mul: { dmg: 1.5, targets: 1, cd: 0.85 },
+      flags: { rend: 1 }
     }
   };
 
@@ -804,6 +898,14 @@
       o.rarity = 5;
       o.flags = o.flags || {};
       if (evo.flag) o.flags[evo.flag] = 1;
+      /* 一条进化可以带多个质变开关（转管风暴既要 spinup 又要 bigBullet） */
+      if (evo.flags) for (k in evo.flags) if (evo.flags[k]) o.flags[k] = 1;
+      /* 进化专属的机制字段（不是数值倍率，所以不走 mul）：
+         chargeTime = 蓄力几秒才开一炮；linger = 开火后光柱停留多久。
+         写在进化条目上，由这里搬进武器数据 —— 本体不该有这些字段。 */
+      if (evo.chargeTime) o.chargeTime = evo.chargeTime;
+      if (evo.linger) o.linger = evo.linger;
+      if (evo.spiralN) o.spiralN = evo.spiralN;
       /* 成长曲线继承本体，但压到 6 成：进化的质变来自 mul，觉醒只是收尾 */
       o.g = {};
       for (k in src.g) {
@@ -825,6 +927,8 @@
         }
       }
       if (evo.block) o.block = evo.block;
+      /* 进化可以换配色：熔核过载要"烧到发白"，只改数值的话打起来还是同一束红光 */
+      if (evo.color) o.color = evo.color;
       if (src.spinup) o.spinup = 1;
       D.gear[o.id] = o;
     }
@@ -870,7 +974,12 @@
     p += Math.min(6, b.pierce || 0) * 2;
     p += Math.min(60, b.radius || 0) * 1.2;
     p += (b.chains || 0) * 4;
-    p += Math.max(0, (b.targets || 1) - 1) * 3;
+    /* 不限目标数的横扫按"稳定命中 5 个"估分：targets 写的是 99，
+       直接吃 99 会把它们判成全表最强、抽取权重压到 0.45，
+       结果就是"改强了反而抽不到" */
+    var tg = b.targets || 1;
+    if (d.noCap) tg = Math.min(tg, 5);
+    p += Math.max(0, tg - 1) * 3;
     p += (b.dur || 0) * 4;
     p += (b.slow || 0) * 14;
     p += (b.stun || 0) * 6;

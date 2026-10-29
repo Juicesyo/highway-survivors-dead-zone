@@ -17,7 +17,7 @@ const Game = HS.Game;
 Game.testMode = true;
 const U = HS.U;
 
-Game.startRun('night', 'soldier');
+Game.startRun('night', 'whale');
 const p = Game.run.p;
 
 let bad = 0;

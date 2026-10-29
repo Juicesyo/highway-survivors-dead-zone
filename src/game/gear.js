@@ -34,6 +34,13 @@
      伤害同步 +14%（DPS 不变）之后，每一级攻速带来的绝对变化才落到眼里。 */
   var BASE_CD = 1.14;
 
+  /* 持续光束（红莲切割者）不吃攻速，但攻速收益不能凭空蒸发 ——
+     玩家点了一堆攻速卡，对这把枪一点反馈都没有，只能觉得是废卡。
+     这里把"本该多打出来的节奏"按这个比例折成伤害（打六折：转化总有损耗，
+     而且它是"永远不断火"，本来就不该等价于同倍率的爆发）。
+     1.0 = 完全等价，0 = 完全不给。 */
+  var SUSTAIN_ATK2DMG = 0.6;
+
   var MECH_ART = {
     bullet: 'gun', burst: 'gun', spread: 'gun',
     beam: 'energy', rail: 'energy', chain: 'energy', flame: 'energy',
@@ -87,6 +94,9 @@
     if (g.dmg) st.dmg = b.dmg * (1 + g.dmg * GROW_DMG * n);
     if (g.dps && b.dps) st.dps = b.dps * (1 + g.dps * GROW_DMG * n);
     if (g.cd && b.cd) st.cd = b.cd * Math.pow(1 - Math.min(0.16, g.cd * GROW_CD), n);
+    /* 挥砍弧度成长：数据里好几件写了 g.arc（大剑 / 镰刀 / 无限目标的横扫类），
+       以前这里不读，等于升级只加伤害、扇面一点不变 —— 死字段 */
+    if (g.arc && b.arc) st.arc = b.arc * (1 + g.arc * n);
     if (g.count) st.count = b.count + Math.floor(g.count * n + 0.001);
     if (g.pierce) st.pierce = b.pierce + Math.floor(g.pierce * n + 0.001);
     if (g.chains) st.chains = b.chains + Math.floor(g.chains * n + 0.001);
@@ -134,11 +144,15 @@
       if (def.full.spin) st.spin = (st.spin || 1) * def.full.spin;
       if (def.full.radius) st.radius = (st.radius || 1) * def.full.radius;
       if (def.full.dmg) st.dmg = (st.dmg || 0) * def.full.dmg;
-      /* 长刃类（光剑无人环）的终形态要把刃身也拉长 */
-      if (def.full.blade) st.blade = def.full.blade;
+      /* 长刃类（光剑无人环）的终形态要把刃身也拉长。
+         用 max 而不是直接赋值：刃长是"加点还能继续堆"的字段，
+         直接赋值会让玩家满级前点过的「加长刃身」在升到 5 级那一刻被吞掉。 */
+      if (def.full.blade) st.blade = Math.max(st.blade || 0, def.full.blade);
       if (def.full.ball) st.ball = def.full.ball;
       if (def.full.pulse) st.pulse = def.full.pulse;
       if (def.full.pulseMax) st.pulseMax = def.full.pulseMax;
+      /* 过载麻痹：满级跟着过载一起变长（电磁轨道球 0.55 → 0.75 秒） */
+      if (def.full.pulseStun) st.pulseStun = def.full.pulseStun;
       /* 环绕体的终形态：电弧球多一条连锁、重力球吸得更狠 */
       if (def.full.chains) st.chains = def.full.chains;
       if (def.full.pull) st.pull = (st.pull || 0) * def.full.pull;
@@ -157,6 +171,10 @@
       if (def.flags.shock) { st.sp = st.sp || {}; st.sp.shock = 1; }
       if (def.flags.homing) { st.sp = st.sp || {}; st.sp.homing = 1; }
       if (def.flags.shard) st.shard = (st.shard || 0) + 3;
+      /* 穿心 / 裂地 / 钻核（见 weapons.js 的 evolutions） */
+      if (def.flags.sure) st.sure = 1;
+      if (def.flags.ring) st.ring = 1;
+      if (def.flags.core) st.core = 1;
     }
     /* 转管预热：本体带 spinup 字段，进化形态用 flag 继承，两处都要认 */
     if (def.spinup || (def.flags && def.flags.spinup)) st.spinup = 1;
@@ -165,6 +183,16 @@
        以前只写进 st.sp 没人读，等于白点 */
     if (st.sp) {
       if (st.sp.homing) st.homing = 1;
+      /* 出血（锯齿刃口）：层数上限跟着分支等级走（3/4/5 层），
+         等级要带进运行时，所以单独存一份 bleedLv —— st.sp 只存"有没有" */
+      if (st.sp.bleed) st.bleedLv = (w.up && w.up.bleed) || 1;
+      /* 嗜血：命中回血的等级（上限与比例都跟着它走） */
+      if (st.sp.leech) st.leechLv = (w.up && w.up.leech) || 1;
+      /* 碎片战斗部（RPG 的第三条分支）：st.sp 只记"有没有"，
+         破片数按分支等级给（1 级 2 片 / 2 级 3 片），和进化自带的 3 片同档。
+         以前这里没有翻译，special 只写进 st.sp 就没人读了 ——
+         卡面写着"爆炸后飞出致命碎片"，点完一颗都不飞。 */
+      if (st.sp.shard) st.shard = (st.shard || 0) + 1 + ((w.up && w.up.shard) || 1);
     }
 
     /* 通用属性 + 兼容换算 */
@@ -204,12 +232,30 @@
       if (st.cd < 0.04) st.cd = 0.04;
     }
 
-    /* 夜图射程惩罚对近战减半：枪在黑夜里要瞄准，刀贴身挥不用瞄 ——
-       别让近战在夜图双倍难受（惩罚 -32% 时近战只吃 -16%） */
+    /* 射程：近战吃满「攻击范围」的增益，但夜图的射程惩罚只吃一半
+       （枪在黑夜里要瞄准，刀贴身挥不用瞄）。
+       以前整条 rangeMul 一起打对折 —— 玩家点「攻击范围」时近战只拿到一半收益，
+       等于这张卡对近战永远是半价。 */
     if (fam === 'melee') {
-      st.range *= 1 + (p.rangeMul - 1) * 0.5;
+      var rb = (p.rangeBoost === undefined ? p.rangeMul : p.rangeBoost);
+      var mapR = (p.mapRangeMul === undefined ? 1 : p.mapRangeMul);
+      st.range *= rb * (1 + (mapR - 1) * 0.5);
     } else {
       st.range *= p.rangeMul;
+    }
+    /* 近战的范围增益要按"这把武器怎么打"换成不同形状，不能一律只拉长半径：
+         · 扇形挥砍（刀 / 剑 / 斧 / 镰）→ 半径 + 弧角一起长，挥得更远也扫得更开
+         · 长矛 / 钻锯（走 thrust 矩形）→ 只涨长度，刃宽由 Gear.thrust 按长度跟算
+         · 拳套 / 冲击波（全周型）→ 只涨半径，弧角已经封顶
+         · 回旋刃（投掷）→ 只涨投掷距离
+       窄刺类（居合 arc 0.12）几乎不涨弧角 —— 它的身份就是一条线。 */
+    if (fam === 'melee' && st.arc && st.arc < 2.8 &&
+        def.mech !== 'thrust' && def.mech !== 'drill' && def.mech !== 'boomerang') {
+      var grow = Math.max(0, (p.rangeBoost === undefined ? p.rangeMul : p.rangeBoost) - 1);
+      if (grow > 0) {
+        var share = st.arc < 0.5 ? 0.15 : (def.noCap ? 0.55 : 0.35);
+        st.arc = Math.min(3.15, st.arc * (1 + grow * share));
+      }
     }
     if (st.radius) st.radius *= p.areaMul;
     if (st.dur) st.dur *= p.durMul;
@@ -239,7 +285,14 @@
       st.bounce = (st.bounce || 0) + p.bounce + (def.bounce || 0);
       st.homing = (st.homing || 0) + p.homing;
     } else if (fam === 'energy') {
-      st.count += p.projCount;
+      if (def.sustainBeam) {
+        /* 持续光束永远只有一道（它的身份是"一道不断的光"）。
+           「弹丸数量」在它身上折成伤害，否则那张卡对红莲就是废卡。 */
+        st.count = 1;
+        if (p.projCount) st.dmg *= 1 + p.projCount * 0.25;
+      } else {
+        st.count += p.projCount;
+      }
       st.pierce += p.pierce;
       st.chains = (st.chains || 0) + p.split + p.bounce;
       st.homing = (st.homing || 0) + p.homing;
@@ -250,10 +303,25 @@
       st.homing = (st.homing || 0) + p.homing;
     } else if (fam === 'melee') {
       /* 近战：穿透变成额外目标，分裂变成回响斩，弹射变成更大的挥砍弧度 */
-      st.targets = (st.targets || 1) + p.pierce + p.projCount;
+      if (def.noCap) {
+        /* 不限目标数的横扫类：再往上加目标数是废属性（扇面里的本来就全吃），
+           把「穿透 / 弹丸数量」折成弧度和伤害，卡面才不至于变成死卡 */
+        var extra = p.pierce + p.projCount;
+        if (extra) {
+          st.arc *= 1 + extra * 0.05;
+          st.dmg *= 1 + extra * 0.06;
+        }
+      } else {
+        st.targets = (st.targets || 1) + p.pierce + p.projCount;
+      }
       st.echo = (st.echo || 0) + p.split;
       if (p.bounce) st.arc *= 1 + p.bounce * 0.08;
       if (p.homing) st.dmg *= 1.08;
+      /* 血怒：近战自带流血（不用点「锯齿刃口」），命中流血目标再叠 25% */
+      if (p.syn && p.syn.bloodRage) st.bleedLv = Math.max(st.bleedLv || 0, 2);
+      /* 血肉磨坊（重型链锯进化）：进化自带"撕裂" —— 不用点「锯齿刃口」，
+         每一口咬下去都叠流血，这才是"磨坊"该有的样子 */
+      if (def.flags && def.flags.rend) st.bleedLv = Math.max(st.bleedLv || 0, 2);
     } else {
       st.targets = (st.targets || 1) + p.pierce + p.projCount;
     }
@@ -333,6 +401,12 @@
   Gear.clearHands = function (p) {
     p.weapons.length = 0;
     p.block = 0;
+    /* 换手就当作"重新点喷"：不清的话，换上一把喷火枪后第一段会是维持音，
+       少了那声起燃的爆点，武器会显得"没点着" */
+    p._flameFireT = -9;
+    p._flameSfx = -9;
+    /* 卸枪 = 光灭了：常驻嗡鸣立刻收掉（否则要等 0.45s 的看门狗） */
+    HS.Audio.beamOff();
   };
 
   /**
@@ -497,6 +571,15 @@
         }
         if (!any) ok = false;
       }
+      /* 第二件"任一即可"（冰火两重天 = 冰霜环 + 火焰环或毒雾）。
+         这里才是真正决定 p.syn 的地方 —— 漏了这段，卡会变成"有冰霜环就自动生效"。 */
+      if (req.gearAny2) {
+        var any2 = false;
+        for (var j2 = 0; j2 < req.gearAny2.length; j2++) {
+          if (Gear.hasGear(p, req.gearAny2[j2])) { any2 = true; break; }
+        }
+        if (!any2) ok = false;
+      }
       if (req.stat && lv(req.stat) < (req.statLvl || 1)) ok = false;
       if (req.stat2 && lv(req.stat2) < (req.stat2Lvl || 1)) ok = false;
       if (req.fam && !fams[req.fam]) ok = false;
@@ -514,11 +597,24 @@
 
   Game.updateWeapons = function (dt) {
     var run = this.run, p = run.p;
-    if (p.veh) return;                 // 驾驶中：手持武器全部收起
+    if (p.veh) {                       // 驾驶中：手持武器全部收起
+      HS.Audio.beamOff();              // 上了车就掐掉红莲的嗡鸣，不留尾音
+      return;
+    }
 
     /* 「暴走」联动：暴击后短时间全面加速，装填时统一折算 */
     var rate = 1;
     if (p.rateT > 0) rate *= 1 + (p.rateMul || 0.2);
+
+    /* 盾牌反震的冷却 / 拳套连打的断连计时 */
+    if (p.counterCd > 0) p.counterCd -= dt;
+    if (p.comboT > 0) {
+      p.comboT -= dt;
+      if (p.comboT <= 0) { p.comboT = 0; p.comboN = 0; }
+    }
+    /* 蓄能指示器每帧先清空，由下面真正在憋的那件武器重新写 */
+    p.chargeVis = 0;
+    p.chargeKind = '';
 
     for (var i = 0; i < p.weapons.length; i++) {
       var w = p.weapons[i];
@@ -540,12 +636,57 @@
       }
 
       /* 持续光束（红莲切割者）：不走上膛/冷却那套，固定 0.08s 一跳。
-         这里**故意不乘 rate** —— 攻速、暴走、过热加速对它全部无效，
-         这是它换取"永远不断火"的代价。 */
+         它换来的是"永远不断火"，代价是攻速 / 冷却缩减 / 暴走 / 过热对它全部无效。
+         但**这些收益不白扔**：按 SUSTAIN_ATK2DMG 折算成这一跳的伤害。
+         倍率用 p 的原始属性算，不拿 st.cd 做比值 —— st.cd 里掺了 BASE_CD 和
+         0.04 下限，比值会算歪（曾经直接拿 def.base.cd / st.cd，结果恒小于 1，
+         等于一点加成都没有）。 */
       if (def.sustainBeam) {
+        /* 常驻光束（红莲切割者 / 熔核过载）：每帧维护一条"一直亮着"的激光状态。
+           以前每跳往 run.chains 塞一条 0.12s 的线，12.5Hz 闪下来在画面上就是
+           "还在扣扳机"；它的设定是一道不断的光，所以改成常驻状态 + 渲染层直画
+           （见 render 的 drawBeamHold）。角度做插值 —— 换目标时是扫过去，不是瞬移。 */
+        var isMelt = !!(def.flags && def.flags.melt);
+        var bt = Game.nearest(p.x, p.y, st.range);
+        /* 射程里没人就**一下都不打**：
+           以前这里不判目标，照样每 0.08s 走一次 Gear.fire —— 伤害是 0、
+           画面上一道光都没有（render 只画 p.beamHold，没目标就不会续），
+           但每隔 0.16s 就有一声"烧"的激光音，连锁闪电也跟着空枪蓄能。
+           玩家听到的是"没人也一直在开枪"，和红莲的观感完全对不上。
+           计时归零：目标一进射程立刻接上，不用重新起燃。 */
+        if (!bt) {
+          HS.Audio.beamOff();        // 光灭了，嗡鸣跟着收（0.26s 淡出）
+          w.timer = 0;
+          continue;
+        }
+        var want = Math.atan2(bt.y - p.y, bt.x - p.x);
+        var hold = p.beamHold;
+        /* 断过 0.16 秒（beamHold 已经淡完）才算"重新点亮"：
+           这一下补一个点燃的爆点，之后交给常驻嗡鸣，不再一发一发地响 */
+        var fresh = !hold || hold.life <= 0;
+        if (!hold) hold = p.beamHold = { ang: want, life: 0, max: 0.16 };
+        var da = want - hold.ang;
+        while (da > Math.PI) da -= U.TAU;
+        while (da < -Math.PI) da += U.TAU;
+        hold.ang += da * Math.min(1, dt * 20);
+        hold.len = st.range;
+        hold.w = st.width || 6;
+        hold.color = def.color;
+        hold.life = hold.max;
+        /* 声音跟着光走：一条不断的嗡鸣（audio.js 的 beam），每帧续期；
+           起手那一下用一发短的激光音做"点燃" —— 持续音的 0.2s 淡入
+           本身没有攻击感，少了这一下会觉得"按下去没打着"。 */
+        HS.Audio.beam(isMelt);
+        if (fresh) HS.Audio.weapon(isMelt ? 'meltlaser' : def.art);
         w.timer -= dt;
         if (w.timer <= 0) {
           w.timer = def.base.cd || 0.08;
+          /* 本该拿到的节奏倍率：攻速全吃（它是短 cd）+ 冷却缩减（短 cd 打五折）
+             + 暴走 + 过热 */
+          var spd = p.atkMul / Math.max(0.5, 1 - p.cdr * 0.5) * rate;
+          if (p.heatT > 0 && p.heatGear) spd *= 1 / 0.65;
+          /* 用 chargeMul 这一发一次性倍率通道，不写进 st 缓存 */
+          w.chargeMul = 1 + Math.max(0, spd - 1) * SUSTAIN_ATK2DMG;
           Gear.fire(w, def, st, true);
         }
         continue;
@@ -564,12 +705,42 @@
 
       w.timer -= dt;
       if (w.timer <= 0) {
+        /* 蓄力巨炮（湮灭炮）：`chargeTime` 秒蓄满才放一发，蓄力时脚下有一圈收束光环。
+           它不吃攻速/冷却（和持续光束同理：蓄力本身就是节奏），
+           所以这里直接读 def.chargeTime，不走 st.cd。 */
+        if (def.chargeTime) {
+          var cNeed = def.chargeTime;
+          w.chargeT = Math.min(cNeed, (w.chargeT || 0) + dt);
+          p.chargeVis = w.chargeT;
+          p.chargeR = 78;
+          p.chargeKind = 'rail';
+          if (w.chargeT < cNeed) { w.timer = 0; continue; }
+          w.chargeT = 0;
+          /* 蓄力**就是**这一发的节奏：不再叠加 st.cd，否则 3 秒蓄力 + 3 秒冷却
+             变成 6 秒一发，实测 8 秒只能打出 1 发（DPS 直接腰斩）。 */
+          w.timer = 0;
+          Gear.fire(w, def, st, false);
+          continue;
+        }
+        /* 蓄能型（冲击波发生器）：到点了但圈里没人，就压着不放。
+           以前 4 秒到点必震一次，大半次数震在空气里 —— 这是它垫底的主因。
+           压着的时候每多等 1 秒下一发 +35%（最多 +140%），碰到人再一把放开 */
+        if (def.charge && !Game.nearest(p.x, p.y, (st.range || 60) + 8)) {
+          w.hold = Math.min(4, (w.hold || 0) + dt);
+          w.timer = 0;
+          p.chargeVis = w.hold;
+          p.chargeR = st.range || 58;
+          continue;
+        }
         /* 枪管过热是临时状态，不能写进缓存数值里，只能在装填时折算 */
         var cdNow = st.cd;
         if (p.heatT > 0 && p.heatGear) cdNow *= 0.65;
         if (w.spin) cdNow *= 1 - 0.4 * w.spin;
         cdNow /= rate;
         w.timer = Math.max(0.04, cdNow);
+        /* 蓄能倍率只作用于这一发，开完立刻清掉，不能留在 w 上 */
+        w.chargeMul = def.charge ? 1 + 0.35 * (w.hold || 0) : 1;
+        w.hold = 0;
         Gear.fire(w, def, st, false);
       }
     }
@@ -604,6 +775,48 @@
     return p.aimA || (p.facing > 0 ? 0 : Math.PI);
   }
 
+  /**
+   * 每吸到一个目标就甩两滴血，朝玩家飞过去 ——
+   * 这是"群体吸血"唯一能被看见的地方：扫五个目标就有五串血往回抽。
+   */
+  function leechTrail(p, e, n) {
+    var run = Game.run;
+    if (!run || run.fx.length >= 210) return;
+    var dx = p.x - e.x, dy = p.y - e.y;
+    var d = Math.sqrt(dx * dx + dy * dy) || 1;
+    var sp = 120;
+    for (var i = 0; i < n; i++) {
+      var jx = U.rand(-3, 3), jy = U.rand(-4, 2);
+      run.fx.push({
+        kind: 'p', x: e.x + jx, y: e.y - 2 + jy,
+        vx: dx / d * sp + U.rand(-24, 24), vy: dy / d * sp + U.rand(-34, -8),
+        life: 0.26, max: 0.26, color: i ? '#a3221e' : '#e0453c', size: 1.5
+      });
+    }
+  }
+
+  /**
+   * 嗜血：把这一刀造成伤害的一小部分转成回血。
+   * **群体吸血**：扫到几个目标就按几个回（每个目标多吸一份），
+   * 但第 n 个目标只按 0.75^(n-1) 折算 —— 一刀扫十个也不会回一管血，
+   * "越多越划算、但有边际递减"。
+   * 挥砍 / 突刺在 Gear.swing / Gear.thrust 里结算；**飞行类的刃（回旋刃）
+   * 走弹体**，由 combat.js 的命中段按同样的衰减结算（见 updateBullets）。
+   */
+  Gear.leechTrail = leechTrail;   // 弹体那边也要甩这两滴血，导出给 combat.js
+  Gear.leech = function (p, n) {
+    if (!(n > 0) || p.hp >= p.maxHp) return;
+    p.hp = Math.min(p.maxHp, p.hp + n);
+    var run = Game.run;
+    if (run && run.fx.length < 200 && Math.random() < 0.5) {
+      run.fx.push({
+        kind: 'p', x: p.x + U.rand(-4, 4), y: p.y + U.rand(-6, 2),
+        vx: U.rand(-10, 10), vy: U.rand(-30, -14),
+        life: 0.3, max: 0.3, color: '#c8322c', size: 1.5
+      });
+    }
+  };
+
   /** 弹着效果：进化 / 分支带来的燃烧、爆炸、拖拽、标记 */
   function hitFx(def, st) {
     if (def.onHit === 'pull') return 'pull';
@@ -618,33 +831,64 @@
   Gear.fire = function (w, def, st, continuous) {
     var p = Game.run.p;
     var mech = def.mech;
-    var ang, i, n, a, mul = shotMul(w, st);
+    var ang, i, n, a, mul = shotMul(w, st) * (w.chargeMul || 1);
+    w.chargeMul = 1;
     var art = MECH_ART[mech] || 'gun';
     w.fireAt = Game.run.t;
 
-    /* 连锁闪电按"开火次数"蓄能：一次齐射/一次挥砍只算一次，持续光束不算 */
-    if (!def.sustainBeam && HS.Game.chargeChain) HS.Game.chargeChain(st, mul, def);
+    /* 连锁闪电按"开火次数"蓄能：一次齐射/一次挥砍只算一次。
+       **这里对全部武器一视同仁** —— 之前把持续光束（红莲切割者）整个排除在外，
+       等于拿了这张卡对它完全无效。真正的限速放在 Game.chargeChain 里：
+       不管蓄能多快，两道电弧之间至少隔 CHAIN_GAP 秒，所以高频武器也刷不起来。 */
+    if (HS.Game.chargeChain) HS.Game.chargeChain(st, mul, def);
 
     switch (mech) {
       case 'bullet': {
         var t = Game.nearest(p.x, p.y, st.range);
         ang = t ? Math.atan2(t.y - p.y, t.x - p.x) : restAngle(p);
-        n = Math.max(1, Math.round(st.count));
         var speed = (st.speed || 320) * p.projSpeedMul;
+        /* 弹幕墙（重型机枪进化）：**不瞄准**，每发甩出一整圈，相位逐发旋转。
+           一圈 10 发、每发只打一个目标（pierce 0），所以单发伤害被抬到 2.6 倍；
+           转速（每发转多少度）用黄金角，十几发之内就能把 360° 铺满且不重复。 */
+        if (def.flags && def.flags.spiral) {
+          /* 一圈多少发由数据给（spiralN）：太少铺不满，太多就变成一堵墙看不出螺旋 */
+          n = Math.max(6, Math.round(def.spiralN || 12));
+          w.spiralA = (w.spiralA || 0) + 2.39996;
+          for (i = 0; i < n; i++) {
+            a = w.spiralA + i * U.TAU / n;
+            Game.shoot(p.x, p.y - 3, a, {
+              dmg: st.dmg * mul, speed: speed, life: st.range / speed,
+              r: 2.1, pierce: st.pierce | 0, color: def.color,
+              split: st.split | 0, bounce: st.bounce | 0,
+              homing: st.homing | 0, effect: hitFx(def, st),
+              radius: def.base.radius || 0, tag: def.fam
+            });
+          }
+          HS.Audio.weapon(def.art);
+          break;
+        }
+        n = Math.max(1, Math.round(st.count));
+        var bigShot = !!(def.flags && def.flags.bigBullet);
         for (i = 0; i < n; i++) {
           a = ang + (n > 1 ? (i - (n - 1) / 2) * (st.spread || 0.06) : U.rand(-st.spread, st.spread));
           Game.shoot(p.x, p.y - 3, a, {
             dmg: st.dmg * mul, speed: speed, life: st.range / speed,
-            r: st.r || 1.9, pierce: st.pierce | 0, color: def.color,
+            /* 转管风暴：弹丸真的变大（判定 + 视觉一起），不是只换个颜色 */
+            r: bigShot ? 2.5 : (st.r || 1.9), pierce: st.pierce | 0, color: def.color,
             split: st.split | 0, bounce: st.bounce | 0,
             homing: st.homing | 0, effect: hitFx(def, st),
             pullStop: def.pullStop, pullK: def.pullK,
+            /* 攻城弩阵：每支箭命中即炸（穿透也炸，见 combat.js 的弹体命中） */
+            boom: (def.flags && def.flags.arrowBoom) ? 30 : 0,
+            big: bigShot ? 1 : 0,
             radius: def.base.radius || 0, tag: def.fam
           });
         }
         /* 按武器本人的 art 选音色：手枪脆、左轮沉、冲锋枪密、飞刀是破风声。
-           高射速下抽 1/4 不发声，避免糊成一片白噪音 */
-        if (Math.random() < 0.75) HS.Audio.weapon(def.art);
+           高射速下抽 1/4 不发声，避免糊成一片白噪音 —— 但**慢枪一发都不许抽**：
+           狙击 1.45s / 左轮 0.82s / 破城者 1.89s，抽掉一发就是"扣了扳机没声音"，
+           玩家只会以为卡了或者空枪。门槛和 Gear.global 的"快枪"判定一致（0.25s）。 */
+        if (!(st.cd < 0.25) || Math.random() < 0.75) HS.Audio.weapon(def.art);
         break;
       }
       case 'burst': {
@@ -707,11 +951,18 @@
           quiet = (p._beamN % 6) !== 0;
         }
         Gear.beam(p, ang, st, def, quiet, mul);
-        if (!def.sustainBeam) HS.Audio.weapon(def.art);
-        else if (Game.run.t - (p._beamSfxT || -9) > 0.16) {
-          p._beamSfxT = Game.run.t;
-          HS.Audio.weapon(def.art);
+        /* 湮灭炮：开火后光柱不立刻消失 —— 交一份"余辉"给渲染层，
+           像冲击波一样往外扩着淡出（见 render 的 drawBeamHold）。 */
+        if (def.linger) {
+          p.beamHold = {
+            ang: ang, len: st.range, w: st.width || 8, color: def.color,
+            life: def.linger, max: def.linger, rail: 1
+          };
         }
+        /* 持续光束（红莲 / 熔核）不开火音：它的声音是 updateWeapons 里
+           那条常驻嗡鸣（HS.Audio.beam），起手的一下"点燃"也在那边放。
+           这里只负责普通光束 —— 一发一道，和开火同帧。 */
+        if (!def.sustainBeam) HS.Audio.weapon(def.art);
         break;
       }
       case 'melee': {
@@ -778,17 +1029,34 @@
       }
       case 'drill': {
         ang = aimAt(p, st.range + 4);
-        Gear.swing(p, ang, st, def, mul);
+        /* 机械钻头（lance）走矩形贯穿：钻头是"直线钻进去"的东西，
+           扇形判定下它站在尸堆里也只打得到一个，"不限目标数"等于没写。
+           链锯 / 电锯剑仍是扇形挥砍，不加 lance 就保持原样 */
+        if (def.lance) Gear.thrust(p, ang, st, def, mul, false);
+        else Gear.swing(p, ang, st, def, mul);
         HS.Audio.weapon('drill');
         break;
       }
       case 'boomerang': {
         ang = aimAt(p, st.range + 10);
-        for (i = 0; i < Math.max(1, Math.round(st.count)); i++) {
+        /* 兜底上限：场上最多留 count×3+3 把（正常往返只有两倍左右）。
+           回旋刃的寿命是靠"回到手上"结束的，万一以后又有哪条路径回不来，
+           一刀一刀攒成几百把会把逐弹逐敌的扫描拖垮（踩过一次：25 秒 90 把） */
+        var liveRang = 0;
+        for (var bi = 0; bi < Game.run.bullets.length; bi++) {
+          if (Game.run.bullets[bi].boomerang) liveRang++;
+        }
+        var room = Math.max(0, Math.round(st.count) * 3 + 3 - liveRang);
+        for (i = 0; i < Math.max(1, Math.round(st.count)) && i < room; i++) {
           Game.shoot(p.x, p.y - 3, ang + i * 0.2 - (st.count > 1 ? 0.1 : 0), {
             dmg: st.dmg * mul, speed: st.speed || 260, life: st.range / (st.speed || 260) * 2,
             r: 2.6, pierce: st.pierce | 0, color: def.color,
             homing: st.homing | 0,
+            /* 回旋刃是"掷出去的刃"，出血同样成立，走弹道的命中特效派发 */
+            effect: st.bleedLv ? 'bleed' : null, bleedLv: st.bleedLv || 0,
+            /* 嗜血也必须跟着弹体走：只写在 st 里没用 —— 刀打中人一滴血不回，
+               玩家点了嗜血完全没感觉（和当年 shard 漏抄同一类坑） */
+            leechLv: st.leechLv || 0,
             boomerang: 1, tag: 'melee'
           });
         }
@@ -816,7 +1084,7 @@
       }
       case 'flame': {
         ang = aimAt(p, st.range);
-        Gear.flame(p, ang, st, def, continuous, mul);
+        Gear.flame(p, ang, st, def, continuous, mul, w);
         break;
       }
       case 'heal': {
@@ -833,6 +1101,33 @@
   };
 
   /** 近战挥砍：扇形内最多 targets 个目标 */
+  /**
+   * 刃返（稀有卡）：挥砍 / 突刺时击落范围内的敌方子弹。
+   *
+   * 这一手以前是近战**默认自带**的 —— 等于刀客天生免疫远程，
+   * 匪徒和呕酸尸对近战就失去了全部压迫感。现在收进一张稀有卡里：
+   * 想要"用身法换安全"，得先付一次升级。
+   *
+   * 只有真的扫到弹才给反馈（一圈冷白冲击环 + 金属声）：
+   * 空挥也闪的话，玩家会误以为这卡一直在生效。
+   */
+  Gear.sweep = function (p, r) {
+    var n = Game.sweepBullets(p, r);
+    if (!n) return 0;
+    var run = Game.run;
+    if (run && run.fx.length < 200) {
+      run.fx.push({
+        kind: 'ring', x: p.x, y: p.y - 2, r: r * 0.3, max: r,
+        life: 0.15, maxLife: 0.15, color: '#cfe9ff'
+      });
+    }
+    if (run && run.t - (p._sweepSfxT || -1) > 0.12) {
+      p._sweepSfxT = run.t;
+      HS.Audio.zap();
+    }
+    return n;
+  };
+
   Gear.swing = function (p, ang, st, def, mul, noSlash) {
     var run = Game.run;
     mul = mul || 1;
@@ -843,6 +1138,19 @@
     var list = run.enemies;
     var cosA = Math.cos(ang), sinA = Math.sin(ang);
     var cosLim = Math.cos(arc / 2);
+    /* 近战清弹改成稀有卡「刃返」（见 passives.js）——
+       白送的话等于近战天生免疫远程，匪徒/呕酸尸对刀客就没威胁了。
+       Lv1 扫身边一圈，Lv2 范围更大。 */
+    if (p.bladeGuard) Gear.sweep(p, range + (p.bladeGuard >= 2 ? 26 : 10));
+    /* 嗜血：这一刀的回血量先攒着，挥完再按上限结算 */
+    var leechAcc = 0;
+    /* 连打（拳套）：只要一直打得到人就越打越重，最多 5 层 × 8%。
+       换武器、打空、或者 1.5 秒没命中都会清零 —— 它是"节奏"，不是永久加成 */
+    var cmb = 1;
+    if (def.combo) {
+      if (p.comboId !== def.id) { p.comboId = def.id; p.comboN = 0; p.comboT = 0; }
+      cmb = 1 + 0.08 * Math.min(5, p.comboN || 0);
+    }
 
     for (var i = 0; i < list.length && hit < maxT; i++) {
       var e = list[i];
@@ -851,8 +1159,24 @@
       var d = Math.sqrt(dx * dx + dy * dy) || 1;
       if (d > range + e.r) continue;
       if ((dx * cosA + dy * sinA) / d < cosLim) continue;
-      Game.hurtEnemy(e, st.dmg * mul, { tag: def.fam,
+      /* 穿心：同一目标连中 3 下，第 4 下必暴 */
+      var sureCrit = 0;
+      if (st.sure) {
+        if (e.uid === p.sureUid) p.sureN = (p.sureN || 0) + 1;
+        else { p.sureUid = e.uid; p.sureN = 1; }
+        if (p.sureN >= 4) { sureCrit = 1; p.sureN = 0; }
+      }
+      if (st.leechLv) {
+        leechAcc += st.dmg * mul * cmb * 0.018 * st.leechLv * Math.pow(0.75, hit);
+        leechTrail(p, e, 2);
+      }
+      Game.hurtEnemy(e, st.dmg * mul * cmb, { tag: def.fam, forceCrit: sureCrit,
+        /* 破甲：机械钻头这类"护甲形同虚设"的武器真的削护甲，
+           以前只在数据里写了个没人读的 pierce（见 weapons.js 的注释） */
+        pen: def.pen || 0,
         electric: def.id === 'voltsaw' || def.id === 'voltsaw_x' || def.id === 'stunbaton' || def.id === 'stunbaton_x' ? 1 : 0 });
+      /* 锯齿刃口：带刃冷兵器命中叠一层流血（见 combat.js 的 Game.bleed） */
+      if (st.bleedLv) Game.bleed(e, st.dmg * mul * cmb, st.bleedLv);
       if (st.stun) e.stun = Math.max(e.stun || 0, st.stun);
       if (st.knock) {
         e.x += dx / d * st.knock;
@@ -878,13 +1202,56 @@
       hit++;
     }
 
+    /* 嗜血结算：群体吸血，已经按目标数衰减过，这里不再封顶 */
+    if (leechAcc > 0) Gear.leech(p, leechAcc);
+    /* 裂地（机械拳套进化）：冲击环变成真判定，一圈内的敌人都再吃半刀 */
+    if (st.ring && hit > 0) {
+      Game.explode(p.x, p.y, (range || 30) * 1.25, st.dmg * 0.5 * mul, def.color, { quiet: true });
+    }
+    /* 钻核（便携钻头进化）：在身前留一个还在转的钻核，持续 2 秒。
+       同时最多 6 个 —— 再多了整片地面会糊成一团灰 */
+    if (st.core && run.pools.length < 20) {
+      var cores = 0;
+      for (var ci2 = 0; ci2 < run.pools.length; ci2++) {
+        if (run.pools[ci2].core) cores++;
+      }
+      if (cores < 6) {
+        run.pools.push({
+          x: p.x + cosA * (range * 0.55), y: p.y + sinA * (range * 0.55),
+          r: 22, life: 2, max: 2, dps: st.dmg * 0.8, tick: 0, dead: false,
+          core: 1, tag: 'melee'
+        });
+      }
+    }
+    if (def.combo) {
+      if (hit > 0) {
+        p.comboN = Math.min(5, (p.comboN || 0) + 1);
+        p.comboT = 1.5;
+      }
+      /* 打空**不清零**：拳套自带击退，一拳把人打出去就断连的话，
+         这套机制等于自己拆自己。断连只由 1.5 秒的计时决定 */
+    }
+
     /* 持续型近战（链锯 / 钻头）每帧都判定，刀光要节流，不然特效会糊成一片 */
     if (!noSlash && run.fx.length < 200 && run.t - (p._slashT || -1) > 0.07) {
       p._slashT = run.t;
       run.fx.push({
         kind: 'slash', x: p.x, y: p.y - 2, ang: ang, r: range,
-        arc: arc, life: 0.16, max: 0.16, color: def.color || '#dfe6ee'
+        arc: arc, life: 0.16, max: 0.16, color: def.color || '#dfe6ee',
+        /* 光剑走"能量刃"那一套画法（外晕 + 白芯），别和刀剑共用一条细线 */
+        glow: def.art === 'saber' ? 1 : 0
       });
+      /* 拳套系：一拳打的是"一整圈冲击"，只画刀光弧会读成"挥了一下刀"。
+         额外给一圈外扩的冲击环，和不限目标数的判定对得上 */
+      if (def.punch) {
+        run.fx.push({
+          kind: 'punch', x: p.x, y: p.y - 2, ang: ang,
+          r0: range * 0.35, r1: range * (1.15 + 0.05 * (p.comboN || 0)), arc: arc,
+          /* 连打层数越高，冲击环越亮越粗 —— 拳头打在身上的"份量"看得见 */
+          q: p.comboN || 0,
+          life: 0.24, max: 0.24, color: def.color || '#dfe6ee'
+        });
+      }
     }
     /* 打击音由 hurtEnemy 统一负责（带节流），这里不再重复 */
   };
@@ -898,6 +1265,9 @@
     var run = Game.run;
     var len = st.range || 48;
     var halfW = Math.max(5, len * 0.17);
+    /* 突刺同样只靠「刃返」清弹：枪尖扫一排，范围比挥砍长一截 */
+    if (p.bladeGuard) Gear.sweep(p, len + (p.bladeGuard >= 2 ? 18 : 6));
+    var leechAcc = 0;
     var maxT = Math.max(1, (st.targets | 0));
     var list = run.enemies;
     var cosA = Math.cos(ang), sinA = Math.sin(ang);
@@ -911,7 +1281,14 @@
       if (along < -e.r || along > len + e.r) continue;
       var perp = Math.abs(-dx * sinA + dy * cosA);
       if (perp > halfW + e.r) continue;
-      Game.hurtEnemy(e, st.dmg * mul, { tag: def.fam });
+      if (st.leechLv) {
+        leechAcc += st.dmg * mul * 0.018 * st.leechLv * Math.pow(0.75, hit);
+        leechTrail(p, e, 2);
+      }
+      Game.hurtEnemy(e, st.dmg * mul, { tag: def.fam, pen: def.pen || 0 });
+      if (st.bleedLv) Game.bleed(e, st.dmg * mul, st.bleedLv);
+      /* 机械钻头：钻开的裂口让目标挨打更痛（可叠 3 层） */
+      if (def.rift) Game.rift(e);
       if (st.stun) e.stun = Math.max(e.stun || 0, st.stun);
       if (st.knock) {
         var d = Math.sqrt(dx * dx + dy * dy) || 1;
@@ -924,6 +1301,8 @@
       hit++;
     }
 
+    /* 突刺贯穿一排，同样按目标数衰减 */
+    if (leechAcc > 0) Gear.leech(p, leechAcc);
     if (!noVis && run.fx.length < 200) {
       run.fx.push({
         kind: 'thrust', x: p.x, y: p.y - 2, ang: ang,
@@ -943,7 +1322,9 @@
    * 「多重光栅」分支和「弹丸数量」属性都通过这条路生效。
    */
   Gear.beam = function (p, ang, st, def, silent, mul, noVis) {
-    var n = Math.max(1, Math.min(4, st.count | 0));
+    /* 持续光束永远只有一道：它的卖点是"一直烧着"，不是并排几道。
+       多重光栅 / 弹丸数量在它身上折算成伤害（见 Gear.global 的 energy 分支）。 */
+    var n = def.sustainBeam ? 1 : Math.max(1, Math.min(4, st.count | 0));
     /* 多道光束走"平行偏移"而不是扇形：扇形在小角度下会糊成一根更粗的线，
        玩家看不出多了几道；平行错开 5px 才是"三根并列的激光"的观感。
        再加一点点扇形，让远端不至于完全重合。 */
@@ -968,17 +1349,36 @@
 
     for (var i = 0; i < run.enemies.length && hit < maxHit; i++) {
       var e = run.enemies[i];
-      if (e.dead || !Game.sameLevel(e)) continue;
+      /* 光束也摸不到水面以下的水鬼（它有 st.sp.burn 会点燃，同一类问题） */
+      if (e.dead || e.submerged || !Game.sameLevel(e)) continue;
       var dx = e.x - bx, dy = e.y - by;
       var along = dx * cosA + dy * sinA;
       if (along < 0 || along > len) continue;
       var perp = Math.abs(-dx * sinA + dy * cosA);
       if (perp > width + e.r) continue;
-      Game.hurtEnemy(e, (st.dmg || 0) * mul, { tag: def.fam, silent: !!quiet,
+      /* 熔核过载（红莲进化）：同一个目标被连续照着会越来越烫。
+         每跳 +9%、最多 8 层（+72%），断火 0.5 秒清零（见 combat.js 的 meltT）。
+         持续光束 12.5 跳/秒 → 0.64 秒叠满，打 BOSS 时能明显看到数字在涨。 */
+      var meltMul = 1;
+      if (def.flags && def.flags.melt) {
+        if (e.meltT > 0) e.melt = Math.min(8, (e.melt || 0) + 1);
+        else e.melt = 1;
+        e.meltT = 0.5;
+        meltMul = 1 + 0.09 * e.melt;
+      }
+      Game.hurtEnemy(e, (st.dmg || 0) * mul * meltMul, { tag: def.fam, silent: !!quiet,
         electric: def.id === 'railgun' || def.id === 'railgun_x' ? 1 : 0 });
+      /* 等离子炮 / 恒星炮：命中处炸开一小团。
+         `radius` 以前是死字段 —— 卡面一直写着"附带小范围爆炸"，实际只有一道直线判定。
+         爆炸按这一跳的 45% 结算（带距离衰减）；quiet 掉震动和音效，
+         因为这是"光束顺带带出来的爆"，不该每命中一次就震屏一次。 */
+      if (st.radius > 0) {
+        Game.explode(e.x, e.y, st.radius, (st.dmg || 0) * mul * 0.45, def.color, { quiet: true });
+      }
       if (st.sp && st.sp.burn) {
-        e.burn = Math.max(e.burn || 0, 1.4);
-        e.burnDps = Math.max(e.burnDps || 0, (st.dmg || 0) * mul * 0.3);
+        /* 光束的"点着"要走 ignite：以前各调用点自己乘系数，
+           同一张卡在不同武器上强度差三倍，调平衡根本改不动 */
+        Game.ignite(e, (st.dmg || 0) * mul * 0.6, 1.8);
       }
       /* 分裂 / 弹射 → 光束折射：从命中点跳一个电弧到旁边最近的敌人。
          光束没有弹丸可以分裂，这是这两个属性对它的落点（0.3s 每敌限一次） */
@@ -1004,7 +1404,7 @@
       }
       hit++;
     }
-    if (!noVis) {
+    if (!noVis && !def.sustainBeam) {
       run.chains.push({
         pts: [{ x: bx, y: by - 2 }, { x: bx + cosA * len, y: by + sinA * len }],
         life: 0.12, max: 0.12, color: def.color, straight: 1,
@@ -1025,7 +1425,7 @@
    *   3. 每 4 次命中冒一个伤害数字（全 silent 会让玩家以为没打到）；
    *   4. 补一声低频"呼"，0.14s 节流，不然连续喷会糊成噪音。
    */
-  Gear.flame = function (p, ang, st, def, continuous, mul) {
+  Gear.flame = function (p, ang, st, def, continuous, mul, w) {
     var run = Game.run;
     var arc = st.arc || 0.5, range = st.range || 90;
     var cosLim = Math.cos(arc);
@@ -1056,13 +1456,34 @@
     p.fireT = 0.07;
     if (p.recoil < 0.3) p.recoil = 0.3;
 
+    /* 炼狱（重型火焰喷射器进化）：烧过的地方会留一片火 ——
+       "整条街都在烧"不能只是伤害数字变大。每 0.45 秒在火舌中段滴一摊，
+       池子自己会点着踩进去的敌人（见 updateEnemies 的火池段） */
+    if (def.flags && def.flags.inferno) {
+      w.poolT = (w.poolT || 0) - (st.cd || 0.14);
+      if (w.poolT <= 0) {
+        w.poolT = 0.45;
+        var pd = range * U.rand(0.5, 0.85);
+        if (run.pools.length < 14) {
+          run.pools.push({
+            x: p.x + Math.cos(ang) * pd, y: p.y + Math.sin(ang) * pd,
+            r: 26, life: 1.7, max: 1.7, dps: st.dmg * 1.1, tick: 0,
+            dead: false, fire: 1
+          });
+        }
+      }
+    }
+
     for (var tongue = 0; tongue < tongues; tongue++) {
     var tAng = tongues > 1 ? ang + (tongue - (tongues - 1) / 2) * tongueStep : ang;
     var cosA = Math.cos(tAng), sinA = Math.sin(tAng);
 
     for (var i = 0; i < run.enemies.length; i++) {
       var e = run.enemies[i];
-      if (e.dead || !Game.sameLevel(e)) continue;
+      /* 潜渡中的水鬼在水面以下：火舌和霜雾都摸不到（和 hurtEnemy 同一条规则）。
+         以前这里只靠 hurtEnemy 拦直伤，点燃 / 减速却照样挂在它身上 ——
+         喷它一滴血不掉，一出水却带着火、还是慢的，逻辑上自相矛盾。 */
+      if (e.dead || e.submerged || !Game.sameLevel(e)) continue;
       var dx = e.x - p.x, dy = e.y - p.y;
       var d = Math.sqrt(dx * dx + dy * dy) || 1;
       if (d > range + e.r) continue;
@@ -1070,8 +1491,10 @@
       /* 不是每一次都报数字，但也不能完全不报 */
       var showNum = ((p._flameHit = (p._flameHit || 0) + 1) % 4) === 0;
       var dmg = st.dmg * mul * tongueMul;
-      /* 冷冻射流的身份：先手弱、后手强 —— 已经冻住的目标吃 1.6 倍 */
-      if (ice && (e.slow || 0) > 0.25) dmg *= 1.6;
+      /* 冷冻射流的身份：先手弱、后手强 —— 已冻住的目标吃 1.45 倍。
+         以前是 1.6，配合高跳数滚成"越喷越痛"，实测单木桩 DPS 54/91（满级），
+         比同档武器高出一大截。降直伤之后它该靠**冻住**吃饭，而不是靠这个倍率。 */
+      if (ice && (e.slow || 0) > 0.25) dmg *= 1.45;
       /* ignoreArmor：火焰与冰霜天生无视护甲，破甲对它们没用 */
       Game.hurtEnemy(e, dmg, { silent: !showNum, tag: ice ? 'ice' : 'fire', ignoreArmor: 1 });
       if (ice) {
@@ -1090,9 +1513,10 @@
           HS.Audio.steam();
         }
       } else {
-        e.burn = Math.max(e.burn || 0, burnT);
-        /* 燃烧专精只乘 dot，不乘这一下的直伤 */
-        e.burnDps = Math.max(e.burnDps || 0, dmg * 0.5 * (p.burnMul || 1));
+        /* 燃烧 dot 按这一跳直伤的 1.4 倍算（原来 1.2）：直伤调低之后，
+           这把枪该让"烧"来干活 —— 挂着火的时候持续输出占比更高，
+           而贴脸那一下的直伤不再是它的主要来源。 */
+        Game.ignite(e, dmg * 1.4 * (p.burnMul || 1), burnT);
         /* 龙息喷枪烧死的目标会炸开并点燃周围，见 combat.js killEnemy */
         if (def.napalm) e.napalm = 1;
       }
@@ -1103,7 +1527,7 @@
         var sp = null, sd = 4900;   // 70px 内最近的一个别的目标
         for (var si = 0; si < run.enemies.length; si++) {
           var se = run.enemies[si];
-          if (se === e || se.dead || !Game.sameLevel(se)) continue;
+          if (se === e || se.dead || se.submerged || !Game.sameLevel(se)) continue;
           var sdx = se.x - e.x, sdy = se.y - e.y;
           var sdd = sdx * sdx + sdy * sdy;
           if (sdd < sd) { sd = sdd; sp = se; }
@@ -1116,8 +1540,8 @@
             sp.slowT = Math.max(sp.slowT || 0, slowFor);
             sp.synFrozen = 1;
           } else {
-            sp.burn = Math.max(sp.burn || 0, burnT);
-            sp.burnDps = Math.max(sp.burnDps || 0, dmg * 0.5 * (p.burnMul || 1));
+            /* 溅射的火星也点得着：伤害减半，燃烧按同一口径给 */
+            Game.ignite(sp, dmg * 0.6 * (p.burnMul || 1), burnT);
           }
         }
       }
@@ -1155,9 +1579,21 @@
       }
     }
 
-    if (run.t - (p._flameSfx || -1) > 0.14) {
+    /* 喷射音：**按"气流"走，不按开火节奏走**。
+       喷火 cd 0.16s，以前每 0.14s 就播一次 0.22s 的音 —— 三段声音永远叠在一起，
+       听起来是一团糊，又吵又听不出在喷东西。
+       现在 0.36s 补一段：开头那下带"起燃"（停火 0.5s 以上再喷），之后是更暗更轻的维持段。
+       单段 0.40s > 间隔 0.36s，所以气流是连着的 —— 间歇地播，听着却是持续的。 */
+    /* "新一轮喷射"的判断要看**开火间隔**，不能看音效间隔：
+       龙息 cd 0.22、重型喷火 cd 0.5，音效本身 0.36s 一段，
+       拿音效间隔当阈值会把每一段都判成起燃（实测就是这样）。
+       这里用"距上次开火 > 两个冷却"来识别停火后重新点喷。 */
+    var fireGap = run.t - (p._flameFireT || -9);
+    p._flameFireT = run.t;
+    if (run.t - (p._flameSfx || -9) > 0.36) {
       p._flameSfx = run.t;
-      if (ice) HS.Audio.frost(); else HS.Audio.flame();
+      var fresh = fireGap > Math.max(0.35, (st.cd || 0.16) * 2.2);
+      if (ice) HS.Audio.frost(fresh); else HS.Audio.flame(fresh);
     }
   };
 
@@ -1180,7 +1616,7 @@
       HS.Audio.ui();
       return;
     }
-    /* 管式发射器（榴弹发射器 / 迫击炮）：从枪口打出去，不是抬手扔出去。
+    /* 管式发射器（榴弹发射器）：从枪口打出去，不是抬手扔出去。
        以前它们也走 handThrow，角色会做出一整套"投掷"动作 —— 拿着一根发射管
        却像在甩手雷，动作和武器完全对不上。 */
     if (def.tube) {
@@ -1238,7 +1674,9 @@
       if (def.id === 'molotov') {
         Game.handThrow(p, tx, ty, {
           dmg: dmg, radius: st.radius, dps: st.dps, dur: st.dur,
-          color: '#ff6b35', explode: false, delay: k * 0.08
+          color: '#ff6b35', explode: false, delay: k * 0.08,
+          /* fire:1 → 火池会点着站在里面的敌人（离开后继续烧） */
+          fire: 1, id: def.id
         });
         continue;
       }

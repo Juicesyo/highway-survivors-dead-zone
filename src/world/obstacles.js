@@ -37,12 +37,24 @@
    */
   var DESERT_HALF = ROAD * 0.5;
 
+  /* 公路隧道：可通行走廊半宽 88，两侧是 44 厚的混凝土衬砌（撞不穿、打不穿），
+     再往外是山体。墙由生成器按 192 区块整段铺，永远无缝 ——
+     这张图没有任何岔路，玩家只能沿 y 走。 */
+  var TUN_HALF = 88;
+  var TUN_WALL = 44;
+  var TUN_ROAD = 56;      // 沥青路面半宽，56~88 是检修步道
+  var ROCK_W = 220;       // 衬砌外侧的山体厚度（纯碰撞，看不见边）
+
+  function isTunnel() { return theme === 'tunnel'; }
+
   function isRoad(x, y) {
+    if (theme === 'tunnel') return Math.abs(x) < TUN_ROAD;
     if (theme === 'desert' || theme === 'flood') return Math.abs(x) < DESERT_HALF;
     return mod(x, BLOCK) < ROAD || mod(y, BLOCK) < ROAD;
   }
   function isSidewalk(x, y) {
     if (isRoad(x, y)) return false;
+    if (theme === 'tunnel') return Math.abs(x) < TUN_HALF;
     if (theme === 'desert' || theme === 'flood') return Math.abs(x) < DESERT_HALF + WALK;
     return mod(x, BLOCK) < ROAD + WALK || mod(y, BLOCK) < ROAD + WALK;
   }
@@ -90,8 +102,200 @@
     return D.props[ids[ids.length - 1]];
   }
 
+  /* 隧道衬砌用的伪道具：够硬、挡子弹、撞不碎。
+     不参与绘制（wall:1，render.js 的 sort/draw 会整段跳过），
+     形状只交给碰撞与弹道查询。 */
+  var TUN_WALL_DEF = {
+    id: 'tunnelwall', w: 0, h: 0,
+    vFrames: [], hFrames: [],
+    solid: 1, blockBullets: 1, crash: 14
+  };
+
+  /* ---------------- 公路隧道：事故现场 ----------------
+   *
+   * 这条隧道是"堵死的那一刻"被封起来的：每隔 1152px 就有一处连环追尾 ——
+   * 三四辆车挤在同一条车道上，角度全拧着，其中一辆已经烧成空壳。
+   * 死规定（改之前先问自己：还走得过去吗？）：
+   *   · 车一律贴着**同一侧**墙，另一侧永远留出 ≥ 46px 的通道（check-tunnel 会量）；
+   *   · 位置 / 角度 / 烧没烧全由事故点种子决定，同一坐标永远一样；
+   *   · 车壳照旧能搜刮 —— 事故现场是这张图主要的金币来源。
+   */
+  var ACC_GAP = 1152;      // 两处事故的间距（6 个区块）
+  var ACC_SPAN = 170;      // 单处事故在 y 方向的半径（含车长和刹车痕）
+
+  function accidentY(k) { return k * ACC_GAP + 300 + U.hash(k, 17, 5527) * 620; }
+  function accidentSide(k) { return U.hash(k, 19, 5531) < 0.5 ? -1 : 1; }
+  function accidentCount(k) { return 5 + Math.floor(U.hash(k, 23, 5533) * 3); }   // 5~7 辆
+
+  /** 一处事故的车位布局（世界坐标，不含区块归属 —— 归谁由 accidentProps 定） */
+  /* 车堆按 k 缓存：渲染每帧要取火源位置、accidentProps 每次落块也算一遍，
+     不缓存的话同一处车堆会被反复构造（一次 5~7 个对象 + 十几次 hash）。 */
+  var carCache = {};
+
+  function accidentCars(k) {
+    if (carCache[k]) return carCache[k];
+    var ay = accidentY(k);
+    var side = accidentSide(k);
+    var n = accidentCount(k);
+    var burnt = Math.floor(U.hash(k, 29, 5537) * n);      // 其中一辆烧成壳
+    var cars = [];
+    for (var i = 0; i < n; i++) {
+      var sd = k * 37 + i;
+      var h1 = U.hash(sd, 3, 5543);
+      var h2 = U.hash(sd, 5, 5549);
+      var h3 = U.hash(sd, 7, 5557);
+      var h4 = U.hash(sd, 11, 5563);
+      /* 车堆里有两辆是横过来的：一辆在路中间，车多的场次再来一辆偏到另一侧，
+         形成一个"绕桩"的 S 弯 —— 这是这处事故真正的玩法，也是走廊被堵住的样子。
+         通道宽度全靠这两辆和墙之间的距离撑着（check-tunnel 会量）。 */
+      var jack = i === n - 1;
+      var jack2 = n >= 5 && i === n - 2;
+      var tipped = jack && U.hash(k, 31, 5573) < 0.85;
+      var def = tipped ? D.props.tipped : (h1 < 0.22 ? D.props.van : D.props.sedan);
+      /* 车堆里**恰好一辆**还在烧（就是"这里为什么会撞"的答案，也是这处场景唯一的光源）。
+         别让 h2<0.16 那几辆也带火：一处车堆点三把火，光照会互相叠加成一片橙雾。 */
+      var burning = i === burnt;
+      var frame;
+      if (tipped) frame = 'car_tipped_v';
+      else if (def === D.props.van) frame = 'car_van_v';
+      else if (burning || h2 < 0.16) frame = 'car_burnt_v';
+      else frame = h2 < 0.58 ? 'car_sedan_v' : 'car_blue_v';
+
+      var w = def.w, h = def.h;
+      /* 跟随车堆的：贴着同侧墙停（44~58，车宽 24，斜 0.6rad 时最远到 84，压不到 88 的墙）；
+         横在中间的那辆：|x| 只有 2~14，车头斜着顶住车堆，把走廊掐到只剩一侧能过。 */
+      /* 横过来那辆的车头顶进车堆里（x 20~28，车身斜着能压到 44 的堆上）——
+         "撞在一起"要靠重叠才看得出来，光挨着只是并排停 */
+      var ox = jack ? side * (20 + h3 * 8)
+        : (jack2 ? -side * (2 + h3 * 10) : side * (44 + h3 * 14));
+      var oy = ay + (i - (n - 1) / 2) * 11 + (h4 - 0.5) * 5;
+      /* 追尾：跟车的车头大多是顺路的，只有横过来那两辆角度是拧的 */
+      var ang = (jack || jack2) ? -side * (1.0 + h3 * 0.5)
+        : (h1 < 0.5 ? -1 : 1) * (0.15 + h3 * 0.6);
+
+      var pad = def.pad || 0;
+      var cw = Math.max(4, w - pad * 2);
+      var ch = Math.max(4, h - pad * 2);
+      cars.push({
+        type: def.id, def: def, acc: k,
+        x: ox, y: oy, w: w, h: h, frame: frame,
+        x0: ox - w / 2, y0: oy - h / 2, x1: ox + w / 2, y1: oy + h / 2,
+        bx0: ox - cw / 2, by0: oy - ch / 2, bx1: ox + cw / 2, by1: oy + ch / 2,
+        solid: true, blockBullets: true,
+        lootable: !!(def.loot && U.hash(sd, 41, 5579) < (def.lootChance || 0)),
+        looted: false,
+        flip: U.hash(sd, 43, 5581) < 0.5,
+        ang: ang, hw: cw / 2, hh: ch / 2,
+        by: oy + h / 2,
+        fire: burning ? 1 : 0
+      });
+    }
+    carCache[k] = cars;
+    return cars;
+  }
+
+  /** 这处事故的火源（还在烧的那辆车），没有就 null */
+  function accidentFire(k) {
+    var cars = accidentCars(k);
+    for (var i = 0; i < cars.length; i++) {
+      if (cars[i].fire) return { k: k, x: cars[i].x, y: cars[i].y - 2 };
+    }
+    return null;
+  }
+
+  /** 渲染 / 照明用：可视范围内的火源 */
+  function firesIn(y0, y1, out) {
+    out = out || [];
+    out.length = 0;
+    if (theme !== 'tunnel') return out;
+    var k0 = Math.floor((y0 - ACC_SPAN) / ACC_GAP);
+    var k1 = Math.floor((y1 + ACC_SPAN) / ACC_GAP);
+    for (var k = k0; k <= k1; k++) {
+      var ay = accidentY(k);
+      if (ay < y0 - ACC_SPAN || ay > y1 + ACC_SPAN) continue;
+      var f = accidentFire(k);
+      if (f) out.push(f);
+    }
+    return out;
+  }
+
+  /** 把落在本区块里的事故车塞进 out（每辆车只归属一个区块，不会重复生成） */
+  function accidentProps(cx, cy, out) {
+    var y0 = cy * CELL;
+    var k0 = Math.floor((y0 - ACC_SPAN) / ACC_GAP);
+    var k1 = Math.floor((y0 + CELL + ACC_SPAN) / ACC_GAP);
+    for (var k = k0; k <= k1; k++) {
+      var cars = accidentCars(k);
+      for (var i = 0; i < cars.length; i++) {
+        var o = cars[i];
+        if (Math.floor(o.y / CELL) !== cy || Math.floor(o.x / CELL) !== cx) continue;
+        out.push(o);
+      }
+    }
+  }
+
+  /** 这个 y 是不是落进了某处事故的车堆里（普通道具要给事故让位，别把通道堵死） */
+  function nearAccident(y) {
+    var k0 = Math.floor((y - ACC_SPAN) / ACC_GAP);
+    var k1 = Math.floor((y + ACC_SPAN) / ACC_GAP);
+    for (var k = k0; k <= k1; k++) {
+      if (Math.abs(accidentY(k) - y) < ACC_SPAN) return true;
+    }
+    return false;
+  }
+
+  /** 渲染用：可视范围内的事故点（画地面的烟熏 / 刹车痕 / 碎玻璃） */
+  function accidentsIn(y0, y1, out) {
+    out = out || [];
+    out.length = 0;
+    if (theme !== 'tunnel') return out;
+    var k0 = Math.floor((y0 - ACC_SPAN) / ACC_GAP);
+    var k1 = Math.floor((y1 + ACC_SPAN) / ACC_GAP);
+    for (var k = k0; k <= k1; k++) {
+      var ay = accidentY(k);
+      if (ay < y0 - ACC_SPAN || ay > y1 + ACC_SPAN) continue;
+      out.push({ k: k, y: ay, side: accidentSide(k), n: accidentCount(k) });
+    }
+    return out;
+  }
+
+  function tunnelWalls(cx, cy, out) {
+    var y0 = cy * CELL, y1 = y0 + CELL;
+    for (var s = -1; s <= 1; s += 2) {
+      var wx = s * (TUN_HALF + TUN_WALL / 2);
+      out.push({
+        type: 'tunnelwall', def: TUN_WALL_DEF, wall: 1,
+        x: wx, y: (y0 + y1) / 2,
+        w: TUN_WALL, h: CELL,
+        x0: wx - TUN_WALL / 2, y0: y0, x1: wx + TUN_WALL / 2, y1: y1,
+        bx0: wx - TUN_WALL / 2, by0: y0, bx1: wx + TUN_WALL / 2, by1: y1,
+        solid: true, blockBullets: true, lootable: false, looted: false,
+        ang: 0, hw: TUN_WALL / 2, hh: CELL / 2, by: y1
+      });
+      /* 墙外的山体：画面里只是一片黑，但**必须也是实心的** ——
+         否则被爆炸甩出去 / 被同伴顶出去的实体能在岩石里"游泳"，
+         再靠 insideSolid 的螺旋搜索又能原地出现在走廊里。 */
+      var rx = s * (TUN_HALF + TUN_WALL + ROCK_W / 2);
+      out.push({
+        type: 'tunnelrock', def: TUN_WALL_DEF, wall: 1,
+        x: rx, y: (y0 + y1) / 2,
+        w: ROCK_W, h: CELL,
+        x0: rx - ROCK_W / 2, y0: y0, x1: rx + ROCK_W / 2, y1: y1,
+        bx0: rx - ROCK_W / 2, by0: y0, bx1: rx + ROCK_W / 2, by1: y1,
+        solid: true, blockBullets: true, lootable: false, looted: false,
+        ang: 0, hw: ROCK_W / 2, hh: CELL / 2, by: y1
+      });
+    }
+  }
+
   function build(cx, cy) {
     var out = [];
+    /* 隧道：墙是"地形"，每个区块都要有；道具另算 */
+    if (theme === 'tunnel') {
+      tunnelWalls(cx, cy, out);
+      /* 事故车先落位：后面的普通道具会拿它们做重叠检测，不会在车里再塞一辆 */
+      if (cx * CELL < TUN_HALF && cx * CELL + CELL > -TUN_HALF) accidentProps(cx, cy, out);
+    }
     var density = D.propDensity[theme] || 0.6;
     /* 少数区块刷两个道具，摆放更松散 */
     var tries = U.hash(cx, cy, 8801) < 0.24 ? 2 : 1;
@@ -109,9 +313,19 @@
       if (bx1 - bx0 < 10) continue;
       ox = bx0 + U.hash(cx, cy, 101 + sd) * (bx1 - bx0);
     }
+    /* 隧道：只有走廊里能摆东西。区间按"整块都在走廊内"取，
+       再给车壳留出旋转后的余量（62 + 22 < 88）。 */
+    if (theme === 'tunnel') {
+      var tx0 = Math.max(cx * CELL, -(TUN_HALF - 26));
+      var tx1 = Math.min(cx * CELL + CELL, TUN_HALF - 26);
+      if (tx1 - tx0 < 8) continue;
+      ox = tx0 + U.hash(cx, cy, 101 + sd) * (tx1 - tx0);
+    }
 
     /* 出生点周围留出空地 */
     if (Math.abs(ox) < 135 && Math.abs(oy) < 135) continue;
+    /* 事故现场里不再摆普通道具：那一处只留车堆，通道宽度才是可算的 */
+    if (theme === 'tunnel' && nearAccident(oy)) continue;
 
     /* 荒漠分区：人造障碍（车壳 / 路牌 / 广告牌…）只出现在路肩附近，
        远处荒野只稀疏地长仙人掌 —— 满地垃圾车不像荒漠 */
@@ -133,6 +347,9 @@
     if (theme === 'desert') {
       /* 荒漠直路：车壳、路障都顺着路摆 */
       vertical = true;
+    } else if (theme === 'tunnel') {
+      /* 隧道：消防通道被刮得只剩一条，车多半是顺着墙擦过去的 */
+      vertical = U.hash(cx, cy, 9031 + sd) < 0.72;
     } else if (theme === 'flood') {
       /* 锈水高速：被水冲过的车不会停得整整齐齐 —— 六成顺路，四成横过来 */
       vertical = U.hash(cx, cy, 9031 + sd) < 0.58;
@@ -296,6 +513,89 @@
     return true;
   }
 
+  /* ---------------- 局部寻路（实心道具） ---------------- */
+
+  /**
+   * 绕实心道具的粗网格寻路：只在敌人真被顶住时调用。
+   *
+   * 为什么需要它：街道上挡路的主要是楼，`Buildings.navClear / wallRoute` 已经能绕；
+   * 但公路隧道的车堆是**几块旋转矩形拼出来的凹形**，纯侧滑会在口袋里左右横跳
+   * （实测 16 秒走不出来）。这里用 12px 格子做一次小范围 BFS，
+   * 目标是"每走一步都离玩家更近"的格子 —— 口袋的出口自然会被选中。
+   *
+   * 返回前方的路点（约 40px 外），走不到就给 null。
+   */
+  function route(ex, ey, tx, ty) {
+    /* 16px 格子 + 半径 3 的四点采样。
+       半径必须**和碰撞半径一致**（杂兵 resolve 用的是 r*0.4 ≈ 2.2px）：
+       按 11px 的"视觉半径"算，寻路会认为车堆彻底封死、直接放弃，
+       而敌人其实挤得过去 —— 那样就变成"明明有缝，却站在缝边上不动"。 */
+    var N = 12, RAD = 12;
+    var cellFree = function (x, y) {
+      if (insideSolid(x, y)) return false;
+      return !insideSolid(x - 3, y) && !insideSolid(x + 3, y) &&
+        !insideSolid(x, y - 3) && !insideSolid(x, y + 3);
+    };
+    var cx = Math.floor(ex / N), cy = Math.floor(ey / N);
+    var w = RAD * 2 + 1;
+    var startI = RAD * w + RAD;
+    var parent = [], dist = [], i;
+    for (i = 0; i < w * w; i++) { parent[i] = -1; dist[i] = -1; }
+
+    var q = [startI], qi = 0;
+    dist[startI] = 0;
+    var bestI = -1, bestCost = 1e9;
+    while (qi < q.length) {
+      var ci = q[qi++];
+      var gx = ci % w, gy = (ci - gx) / w;
+      var wx = (cx - RAD + gx) * N + N * 0.5;
+      var wy = (cy - RAD + gy) * N + N * 0.5;
+      var dd = dist[ci];
+      /* 代价 = 到玩家的直线距离 + 走过的格数（一步按 4px 算）。
+         口袋里的格子虽然离玩家近，但要走十几步，会被这条路挡住。 */
+      var cost = Math.sqrt((tx - wx) * (tx - wx) + (ty - wy) * (ty - wy)) + dd * 4;
+      if (cost < bestCost) { bestCost = cost; bestI = ci; }
+      for (var k = 0; k < 4; k++) {
+        var nx = gx + (k === 0 ? 1 : k === 1 ? -1 : 0);
+        var ny = gy + (k === 2 ? 1 : k === 3 ? -1 : 0);
+        if (nx < 0 || ny < 0 || nx >= w || ny >= w) continue;
+        var ni = ny * w + nx;
+        if (dist[ni] >= 0) continue;
+        if (!cellFree((cx - RAD + nx) * N + N * 0.5, (cy - RAD + ny) * N + N * 0.5)) continue;
+        dist[ni] = dd + 1;
+        parent[ni] = ci;
+        q.push(ni);
+      }
+    }
+    if (bestI < 0 || dist[bestI] === 0) return null;
+
+    /* 沿父链回到起点，取前方第 2~4 格当路点（太近会原地蹭，太远会抄角）。
+       优先选"直着能走到"的那一格；全被挡住就退回最近的一格，
+       反正下一帧还会重算 —— 比在原地打转强。 */
+    var chain = [bestI], guard = 0;
+    while (parent[chain[chain.length - 1]] >= 0 && guard++ < 64) {
+      chain.push(parent[chain[chain.length - 1]]);
+    }
+    var fallback = null;
+    for (var hop = 4; hop >= 1; hop--) {
+      if (hop >= chain.length) continue;
+      var pick = chain[hop];
+      var pgx = pick % w, pgy = (pick - pgx) / w;
+      var px = (cx - RAD + pgx) * N + N * 0.5;
+      var py = (cy - RAD + pgy) * N + N * 0.5;
+      var pt = { x: px, y: py };
+      if (!fallback) fallback = pt;
+      var sx = px - ex, sy = py - ey;
+      var sd = Math.sqrt(sx * sx + sy * sy) || 1;
+      var steps = Math.ceil(sd / 7), blocked = false;
+      for (var si = 2; si <= steps; si++) {
+        if (!cellFree(ex + sx * (si / steps), ey + sy * (si / steps))) { blocked = true; break; }
+      }
+      if (!blocked) return pt;
+    }
+    return fallback;
+  }
+
   /** 圆形实体推出建筑墙体 / 家具，再推出实心道具（就地修改 ent） */
   function resolve(ent, r, ox, oy) {
     var run = HS.Game && HS.Game.run;
@@ -424,6 +724,7 @@
 
   var World = {
     CELL: CELL, BLOCK: BLOCK, ROAD: ROAD, WALK: WALK,
+    TUN_HALF: TUN_HALF, TUN_WALL: TUN_WALL, TUN_ROAD: TUN_ROAD,
     reset: function (mapTheme) {
       cache = {};
       count = 0;
@@ -440,6 +741,12 @@
     hitBlock: hitBlock,
     insideSolid: insideSolid,
     nearLoot: nearLoot,
+    accidentsIn: accidentsIn,
+    route: route,
+    accidentY: accidentY,
+    accidentFire: accidentFire,
+    firesIn: firesIn,
+    ACC_GAP: 1152,
     smash: smash,
     buildingsInRect: buildingsInRect,
     isRoad: isRoad,

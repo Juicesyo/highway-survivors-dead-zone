@@ -14,9 +14,13 @@
  *   道具（车 / 箱子）仍是 1 倍密度，不带 px 字段。
  *
  * 角色重画流程：
- *   node tools/gen-sprites-2x.js        （按行生成点阵，自动校验行宽）
- *   node tools/preview-sprites.js       （放大成 PNG 看效果）
- *   node tools/build-sprites.js         （烘焙进图集）
+ *   主角鲸鱼娘：直接改 assets/dafeiyu-chibi-character/ 的原图，然后
+ *     node tools/gen-whale.js            （抠图 → 48x56 两帧 → assets/whale.png）
+ *   敌人点阵：
+ *     node tools/gen-sprites-2x.js       （按行生成点阵，自动校验行宽）
+ *     node tools/preview-sprites.js      （放大成 PNG 看效果）
+ *   最后统一烘焙：
+ *     node tools/build-sprites.js        （字符点阵 + 位图帧 → assets/sprites.png）
  */
 (function () {
   var G = typeof GameGlobal !== 'undefined' ? GameGlobal
@@ -36,49 +40,25 @@
    * 让人物在灰色柏油路面上不会糊成一团。
    */
 
+
+  /* ---------------- 位图帧（原图直接进图集） ----------------
+   *
+   * 主角鲸鱼娘不在这里画点阵，而是直接吃 assets/dafeiyu-chibi-character 里的原图：
+   * tools/gen-whale.js 把角色从设定图里抠出来（剔掉地面投影和星星），
+   * 按公共缩放比缩到 48x56，再从站姿派生出行走四拍 + 呼吸帧，收敛到 26 色，
+   * 拼成一条 7 帧的精灵表 assets/whale.png。
+   *
+   * px:2 → 世界 24x28（画面缓冲是 2 倍超采样，所以屏幕上是 1:1 的 48x56，
+   * 原图的细节能整块保留）。count 是这一条图里的帧数，frameList 里用 bi 索引。
+   *
+   * legs:false —— 这台机子里的帧已经是"整个姿势"，不能再让 drawActor 按 lr
+   * 把腿切下来做补间，否则行走帧会被二次拆解，腿会乱飘。
+   */
+  var bitmaps = {
+    whale: { file: 'assets/whale.png', w: 48, h: 56, px: 2, count: 25, legs: false }
+  };
+
   var defs = {
-    /* 主角 14x16：军帽压眉 / 带高光的眼睛 / 收腰夹克+领口拉链 / 腰带 / 双腿 */
-    player: {
-      w: 24, h: 28, px: 2,
-      pal: {
-        '.': null,
-        o: '#0e1218',
-        c: '#2f4f6f', C: '#4a719a', n: '#1d3350',
-        s: '#e8b98d', S: '#ffd9b0', d: '#b98a63', k: '#15181f', e: '#eef4fa', m: '#7d4a38',
-        j: '#3b5b8a', J: '#527bb0', h: '#27405f', q: '#c3cedb', a: '#7a5232',
-        p: '#39404f', P: '#4b5368', b: '#1d222b', B: '#272d37'
-      },
-      rows: [
-        '.....oCCCCCCCCCCCCo.....',
-        '.....oCCCCCCCCCCCCo.....',
-        '.....oCccccccccccCo.....',
-        '.....oCccccecccccCo.....',
-        '...onnnnnnnnnnnnnnnno...',
-        '....odssssssssssssdo....',
-        '....osssssssssssssso....',
-        '....osskekksskkkksso....',
-        '....osssssssssssssso....',
-        '....osssssmmmmssssso....',
-        '.....odssssssssssdo.....',
-        '......oojjjjjjjjoo......',
-        'oJJJJJJJJJJJJJJJJJJJJJJo',
-        'oJJhhJJJJaaqqqqJJJJhhJJo',
-        '.ohJJJJJJJaajjjjjjJJJho.',
-        '.ohJJJJJJJJaajjjjJJJJho.',
-        '.ohJJJJJJJJJJaajjjJJJho.',
-        '.osjjjjjjjjjjjjjjjjjjso.',
-        '.oBBBBBBBBBBBBBBBBBBBBo.',
-        '......oppppppppppo......',
-        '..oppppppppppppppppppo..',
-        '..opppppppp..ppppppppo..',
-        '..opppPPppp..pppPPpppo..',
-        '..opppppppp..ppppppppo..',
-        '..opppppppp..ppppppppo..',
-        '.opppppppp....ppppppppo.',
-        '..obbbbbbb....bbbbbbbo..',
-        '..obbbbbbb....bbbbbbbo..'
-      ]
-    },
 
     /* 游荡者 14x14：歪头、双眼红光、咧到耳根的烂嘴露着牙、烂衣露肚 */
     walker: {
@@ -561,6 +541,138 @@
         '......obbbbbb.....bbbbbbo.......',
         '......obbbbbb.....bbbbbbo.......'
       ]
+    },
+
+    /* 自爆尸 10x12（2 倍密度）：公路隧道专属。鼓到发亮的肚囊是唯一的识别点 ——
+       皮下一道道裂口透出荧光，嘴被人缝上了，两只手已经烂成小残肢。
+       它不会喷东西打你，它是"走过去、被你打死、然后炸开"。 */
+    bomber: {
+      w: 20, h: 24, px: 2,
+      pal: {
+        '.': null,
+        o: '#0b0d07',
+        g: '#8a9a52', G: '#a6b46a', h: '#6c7a3c', d: '#55622d',
+        k: '#12130c', e: '#ffd166', x: '#d8cfa8',
+        l: '#e6ff62', L: '#fbffc8', b: '#15160f'
+      },
+      rows: [
+        '......ooooooo.......',
+        '......oGGGGGGo......',
+        '......oGggggGo......',
+        '.....oGggggggGo.....',
+        '....ogkkeggkeggo....',
+        '....ogggggggggo.....',
+        '....ogdxxxxxxgo.....',
+        '....ogggggggggo.....',
+        '.....odddddddo......',
+        '...oGGgggggggggGo...',
+        '..oGGgggggggggggGo..',
+        '..ogggllllllllgggo..',
+        '.oglLlllllllllLlgo..',
+        '.oglLllllxxllllLlgo.',
+        '.oglllllxxxlllllgo..',
+        '.oglllllxxxlllllgo..',
+        '.oggllllllllllllggo.',
+        '..ogGGGGGGGGGGGGgo..',
+        '..ogggggggggggggo...',
+        '...oddddddddddddo...',
+        '....oddddddddddo....',
+        '...odddd..dddddo....',
+        '...obbbbb..bbbbbo...',
+        '...obbbbb..bbbbbo...'
+      ]
+    },
+
+    /* 尖啸者 14x15（2 倍密度）：公路隧道 Boss 之一。
+       瘦到只剩骨架，头整个仰起来，一张占掉半张脸的嘴 —— 那口张着就是在发超声。
+       双肋外翻、手臂细长垂下，站姿像一根被拉长的音符。 */
+    shrieker: {
+      w: 28, h: 29, px: 2, boss: true,
+      pal: {
+        '.': null, o: '#08090c',
+        g: '#7d8a90', G: '#9aa8ae', h: '#5e6a70', d: '#4c565c',
+        k: '#0d1013', e: '#8fe8ff', m: '#100609', x: '#e6ebee',
+        t: '#3d4650', T: '#4f5a66', s: '#a8b6bc', b: '#141a1f'
+      },
+      rows: [
+        '..........oooooooo..........',
+        '..........oGGGGGGo..........',
+        '.........oGgggggGo..........',
+        '.........ogkegkegko.........',
+        '.........ogggggggo..........',
+        '.........odmmmmmmdo.........',
+        '.........odxmmmmxdo.........',
+        '.........odxxmmxxdo.........',
+        '.........odmmmmmmdo.........',
+        '.........oggddddggo.........',
+        '..........otttttto..........',
+        '.......ottttttttttto........',
+        '......osstttttttttsso.......',
+        '......osstttttttttsso.......',
+        '......osstttttttttsso.......',
+        '......ossttxtttxttsso.......',
+        '......ossttxtttxttsso.......',
+        '......osstttttttttsso.......',
+        '......ossssttttttssso.......',
+        '......ogggtttttttgggo.......',
+        '........otttttttttto........',
+        '........odddddddddo.........',
+        '.........oddddddddo.........',
+        '.......oddddd..ddddo........',
+        '......oddddd....ddddo.......',
+        '......oddddd....ddddo.......',
+        '......odddd....dddddo.......',
+        '.......obbbbb..bbbbbo.......',
+        '.......obbbbb..bbbbbo.......',
+      ]
+    },
+
+    /* 育母 17x16（2 倍密度）：公路隧道 Boss 之二。
+       头小得几乎看不见，整个人被一颗鼓到半透明的育囊压弯 ——
+       囊皮底下黄绿色的胎液一层层涌动，缝线一路从胸口裂到胯。
+       它的杀招不是打你，是从这条裂缝里挤出成窝的小自爆尸。 */
+    brood: {
+      w: 34, h: 32, px: 2, boss: true,
+      pal: {
+        '.': null, o: '#0c0a08',
+        g: '#9a7f6a', G: '#b59a83', h: '#7a6152', d: '#634d41',
+        k: '#12100c', e: '#ff7043', x: '#d8cfa8',
+        l: '#a89a52', L: '#e3d67e', b: '#171410'
+      },
+      rows: [
+        '.............oooooooo.............',
+        '.............oGGGGGGo.............',
+        '.............oGggggGo.............',
+        '............ogkegkeggo............',
+        '............oggggggggo............',
+        '............ogdxxxxdgo............',
+        '............oggddddggo............',
+        '...........oGggggggggGo...........',
+        '..........oGggggggggggGo..........',
+        '.........oggggggggggggggo.........',
+        '........oggggggggggggggggo........',
+        '.......ogggGGGGGGGGGGGGggo........',
+        '......oggGGGGGGGGGGGGGGGggo.......',
+        '.....oGgGGGGGGGGGGGGGGGGGggo......',
+        '.....oGgGglllllllllllllllgGgo.....',
+        '.....oggGllllLLLxxLLLLllllGgo.....',
+        '....oggGlllLLLLxxLLLLLllllGgo.....',
+        '....ogggllllLLLxxLLLLLllllggo.....',
+        '....oggggllllLLLLLLLLlllllggo.....',
+        '....oggGGGlllllllllllllGGGggo.....',
+        '.....ogGGGGGGGGGGGGGGGGGGGGgo.....',
+        '.....ogggggggggggggggggggggo......',
+        '......oggggggggggggggggggggo......',
+        '.......oddddddddddddddddddo.......',
+        '........oddddddddddddddddo........',
+        '.........oddddddddddddddo.........',
+        '..........oddddddddddddo..........',
+        '........odddddd....ddddddo........',
+        '........oddddd......dddddo........',
+        '.......oddddd......ddddddo........',
+        '........obbbbb......bbbbbo........',
+        '.......obbbbb......bbbbbbbo.......',
+      ]
     }
   };
 
@@ -587,32 +699,6 @@
       s: '#8f7f62', S: '#aa9877', b: '#1d1c1a', B: '#2d2b26'
     },
     rows: defs.boss.rows
-  };
-
-  /* ---------------- 角色配色 ---------------- */
-
-  /* 每套服装都要给出完整的明暗阶，否则帽檐/领口会留着上一套的颜色 */
-  var playerPals = {
-    soldier: {
-      c: '#2f4f6f', C: '#4a719a', n: '#1d3350',
-      j: '#3b5b8a', J: '#527bb0', h: '#27405f', q: '#c3cedb',
-      p: '#39404f', P: '#4b5368'
-    },
-    medic: {
-      c: '#a83e3e', C: '#c95959', n: '#78292a',
-      j: '#c9d0d8', J: '#e6ecf2', h: '#97a3ae', q: '#f2f6fa',
-      p: '#464c57', P: '#5c6472'
-    },
-    mechanic: {
-      c: '#8a5a1a', C: '#b07a2a', n: '#5f3d0f',
-      j: '#d9a441', J: '#f0c66a', h: '#a87a24', q: '#f2e3c2',
-      p: '#464034', P: '#5e5446'
-    },
-    ghost: {
-      c: '#4b3a72', C: '#6d56a6', n: '#32265a',
-      j: '#8f76c9', J: '#ab93e2', h: '#6a559d', q: '#d8cdf0',
-      p: '#38314a', P: '#494060'
-    }
   };
 
   /* ---------------- 场景道具（程序化绘制，同样进图集） ---------------- */
@@ -1146,6 +1232,83 @@
     px(8, 5, 1, 1, '#a89c80');
   }
 
+  /* ---------------- 公路隧道专属道具 ---------------- */
+
+  /* 射流风机 30x12：吊在衬砌上的一排圆筒，隧道里唯一"还在运转"的东西（其实早停了）。
+     正上方视角看到的是一段带环肋的圆筒 + 一端的导流罩 + 积在壳上的灰。 */
+  function jetfan(px) {
+    /* 投影 */
+    px(2, 10, 26, 2, '#171a1e');
+    /* 筒身 */
+    px(1, 2, 28, 7, '#3b4048');
+    px(2, 1, 26, 1, '#535a63');
+    px(2, 2, 26, 2, '#4a5058');
+    px(2, 7, 26, 2, '#2c3036');
+    /* 环肋：每 5px 一道 */
+    for (var i = 0; i < 6; i++) px(3 + i * 4, 2, 1, 6, '#2a2e34');
+    /* 导流罩（右端） */
+    px(26, 3, 3, 5, '#33383f');
+    px(27, 4, 2, 3, '#22262b');
+    /* 锈斑与灰 */
+    px(6, 3, 2, 1, '#7a5a3e');
+    px(15, 6, 3, 1, '#6d5138');
+    px(9, 5, 1, 1, '#5c6068');
+    /* 吊杆 */
+    px(5, 0, 1, 2, '#2a2e34');
+    px(21, 0, 1, 2, '#2a2e34');
+  }
+
+  /* 消防箱 12x16：嵌在墙上、玻璃被砸开的红色柜子，水带垂在外面 */
+  function firebox(px) {
+    px(1, 14, 10, 2, '#171a1e');           /* 投影 */
+    px(1, 1, 10, 13, '#7d1a12');           /* 柜体 */
+    px(1, 1, 10, 2, '#a52c20');            /* 顶面受光 */
+    px(2, 4, 8, 8, '#20262b');             /* 砸碎的玻璃窗口 */
+    px(3, 5, 6, 1, '#3c464e');
+    px(3, 11, 6, 1, '#2a3138');
+    /* 水带：一圈盘着，末端垂到地上 */
+    px(4, 7, 4, 3, '#c8bfa6');
+    px(4, 7, 4, 1, '#ded6bc');
+    px(5, 8, 2, 1, '#8f8874');
+    px(7, 12, 2, 4, '#b8b098');
+    px(8, 13, 1, 3, '#9a927c');
+    /* 掉在旁边的阀门 */
+    px(9, 14, 2, 1, '#6b6f76');
+    /* 门把手 */
+    px(9, 6, 1, 3, '#e0d6c0');
+  }
+
+  /* 疏散标志 10x8：绿色发光牌，隧道断电之后还在亮 —— 唯一的光源之一 */
+  function exitsign(px) {
+    px(0, 0, 10, 8, '#0f2a1b');
+    px(1, 1, 8, 6, '#1d6b3c');
+    px(1, 1, 8, 1, '#2f9455');
+    /* 奔跑的小人 + 箭头（像素级简化） */
+    px(2, 3, 2, 2, '#7dffb0');
+    px(2, 5, 1, 2, '#7dffb0');
+    px(3, 4, 1, 3, '#7dffb0');
+    px(5, 4, 3, 1, '#7dffb0');
+    px(6, 3, 1, 1, '#7dffb0');
+    px(6, 5, 1, 1, '#7dffb0');
+    /* 牌面反光 */
+    px(1, 6, 3, 1, '#4fbf7c');
+  }
+
+  /* 防撞桶 12x12：橙白条纹的塑料水马，撞瘪了一只 */
+  function crashbarrel(px) {
+    px(1, 10, 10, 2, '#171a1e');
+    px(1, 1, 10, 10, '#b8541a');
+    px(1, 1, 10, 2, '#d06a26');
+    px(2, 4, 8, 2, '#d6cfbe');            /* 白色反光带 */
+    px(2, 8, 8, 1, '#d6cfbe');
+    px(1, 9, 10, 1, '#8f3f12');
+    /* 撞瘪的那一侧 */
+    px(8, 3, 3, 4, '#8f3f12');
+    px(9, 4, 2, 2, '#6f300e');
+    /* 顶盖 */
+    px(3, 0, 6, 1, '#e0d8c6');
+  }
+
   var props = {
     car_sedan_v: { w: 24, h: 40, draw: function (px) { carBody(px, PAL.sedan); } },
     car_sedan_h: { w: 40, h: 24, draw: function (px) { carBody(T(px), PAL.sedan); } },
@@ -1175,21 +1338,39 @@
     motelsign: { w: 18, h: 30, draw: function (px) { motelsign(px); } },
     cactus: { w: 16, h: 26, draw: function (px) { cactus(px); } },
     rock: { w: 24, h: 18, draw: function (px) { rock(px); } },
-    skull: { w: 12, h: 8, draw: function (px) { skull(px); } }
+    skull: { w: 12, h: 8, draw: function (px) { skull(px); } },
+    /* 公路隧道专属：别的图没有这些 */
+    jetfan: { w: 30, h: 12, draw: function (px) { jetfan(px); } },
+    firebox: { w: 12, h: 16, draw: function (px) { firebox(px); } },
+    exitsign: { w: 10, h: 8, draw: function (px) { exitsign(px); } },
+    crashbarrel: { w: 12, h: 12, draw: function (px) { crashbarrel(px); } }
   };
 
   /* ---------------- 图集帧表 -------------- */
 
   /* 敌人基础帧顺序，精英/受击变体按这个顺序自动补（boss 系不做精英变体） */
-  var enemyOrder = ['walker', 'runner', 'crawler', 'spitter', 'pouncer', 'vomiter', 'brute', 'terrorist', 'drowner', 'boss', 'gatling', 'stalker', 'axeboss'];
+  var enemyOrder = ['walker', 'runner', 'crawler', 'spitter', 'pouncer', 'vomiter', 'brute', 'terrorist', 'drowner',
+    'bomber', 'boss', 'gatling', 'stalker', 'axeboss', 'shrieker', 'brood'];
 
   var frameList = [];
   var i;
 
-  for (i = 0; i < 4; i++) {
-    var cid = ['soldier', 'medic', 'mechanic', 'ghost'][i];
-    frameList.push({ name: 'player_' + cid, def: 'player', pal: playerPals[cid] });
+  /* 主角鲸鱼娘：四个朝向 x 6 帧（站立A / 站立B / 行走四拍），外加一张开心跳。
+     帧序 0..5 朝下、6 开心、7..12 朝上、13..18 朝左、19..24 朝右。
+     帧全在同一条位图上，高度统一到 52 行，换朝向时不会跳高矮。 */
+  var PDIRS = ['dn', 'up', 'lf', 'rt'];
+  for (var pd = 0; pd < 4; pd++) {
+    for (var pf = 0; pf < 6; pf++) {
+      /* 开心帧插在朝下那组后面，所以朝下以外要 +1 */
+      frameList.push({
+        name: 'player_whale_' + PDIRS[pd] + '_' + pf,
+        bmp: 'whale',
+        bi: pd === 0 ? pf : pd * 6 + pf + 1
+      });
+    }
   }
+  frameList.push({ name: 'player_whale', bmp: 'whale', bi: 0 });          // 兼容：= 朝下站立 A
+  frameList.push({ name: 'player_whale_happy', bmp: 'whale', bi: 6 });
   for (i = 0; i < enemyOrder.length; i++) {
     frameList.push({ name: enemyOrder[i], def: enemyOrder[i] });
   }
@@ -1209,12 +1390,14 @@
 
   var data = {
     defs: defs,
-    playerPals: playerPals,
+    bitmaps: bitmaps,
     enemyOrder: enemyOrder,
     frameList: frameList,
     props: props,
-    /* 图集排布：每格固定大小，方便美术按格子重画 */
-    meta: { cellW: 48, cellH: 48, cols: 6, margin: 1, version: 2 }
+    /* 研究所角色页用的立绘（121x161，原图逻辑分辨率的半档，1:1 显示不糊） */
+    portrait: 'assets/whale-full.png',
+    /* 图集排布：每格固定大小，方便美术按格子重画。cellH 要容得下 48x56 的主角帧 */
+    meta: { cellW: 48, cellH: 56, cols: 6, margin: 1, version: 3 }
   };
 
   if (typeof module !== 'undefined' && module.exports) module.exports = data;

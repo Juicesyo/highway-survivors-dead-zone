@@ -33,7 +33,7 @@ function check(name, cond, extra) {
 
 /* ---------- 1. 通关 → 解锁 → 落盘 ---------- */
 console.log('[通关写入与解锁]');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 Game.run.t = 360;
 Game.finishRun(true);
 let d = HS.Save.data;
@@ -44,10 +44,10 @@ check('desert 尚未解锁（要过夜图）', d.unlockedMaps.indexOf('desert') 
 
 /* 依次推到荒漠公路通关，锈水高速必须作为第四张图解锁 */
 Game.state = 'title';
-Game.startRun('night', 'soldier');
+Game.startRun('night', 'whale');
 Game.finishRun(true);
 Game.state = 'title';
-Game.startRun('desert', 'soldier');
+Game.startRun('desert', 'whale');
 Game.finishRun(true);
 d = HS.Save.data;
 check('荒漠通关后 desert 记录完成', d.mapWins.desert === 1, JSON.stringify(d.mapWins));
@@ -78,11 +78,12 @@ HS.Save.load();
 d = HS.Save.data;
 check('旧档 wins=3 迁移到 mapWins.highway', d.mapWins.highway === 3, JSON.stringify(d.mapWins));
 check('旧档 night 自动解锁', d.unlockedMaps.indexOf('night') >= 0, JSON.stringify(d.unlockedMaps));
+check('旧档里的旧角色并成鲸鱼娘', d.chars.length === 1 && d.chars[0] === 'whale', d.chars.join(','));
 
 /* ---------- 3. 死亡不解锁 ---------- */
 console.log('[死亡结算不解锁]');
 HS.Save.reset();
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 Game.run.t = 200;
 Game.finishRun(false);
 d = HS.Save.data;

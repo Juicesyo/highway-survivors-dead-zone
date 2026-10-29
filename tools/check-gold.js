@@ -28,7 +28,7 @@ function grab(fn) {
 }
 
 /* 1. 通关结算页 */
-G.startRun('night', 'soldier');
+G.startRun('night', 'whale');
 G.run.gold = 42; G.run.kills = 500; G.run.t = 360;
 G.finishRun(true);
 ck('结算状态', G.state === 'result', G.state);
@@ -44,7 +44,7 @@ ck('结算页金币总额正确', logs.some(l => l.t === '+' + r.gold), logs.fil
 
 /* 2. 未通关结算页 */
 G.state = 'title';
-G.startRun('highway', 'soldier');
+G.startRun('highway', 'whale');
 G.run.gold = 17; G.run.kills = 800; G.run.t = 300;
 G.finishRun(false);
 logs = grab(() => HS.UI.result(G));

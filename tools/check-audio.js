@@ -15,31 +15,44 @@ let bad = 0;
 const ck = (n, c, x) => { console.log((c ? '  OK  ' : '  FAIL') + ' ' + n + (x ? '  (' + x + ')' : '')); if (!c) bad++; };
 
 function mkParam(v) {
+  /* 记下最后一次被写进去的值：持续光束的基频 / 增益都靠它断言 */
   return {
     value: v,
-    setValueAtTime() { return this; },
-    exponentialRampToValueAtTime() { return this; },
-    linearRampToValueAtTime() { return this; }
+    setValueAtTime(x) { this.value = x; return this; },
+    exponentialRampToValueAtTime(x) { this.value = x; return this; },
+    linearRampToValueAtTime(x) { this.value = x; return this; },
+    cancelScheduledValues() { return this; }
   };
 }
 
 function mkCtx(withShaper) {
   const dest = { name: 'dest' };
   const made = [];
+  const osc = [], srcs = [];
   const ctx = {
     currentTime: 0, sampleRate: 44100, state: 'running', destination: dest,
     createGain() {
-      const g = { kind: 'gain', gain: mkParam(1), to: [], connect(t) { this.to.push(t); return t; } };
+      const g = { kind: 'gain', gain: mkParam(1), to: [], connect(t) { this.to.push(t); return t; }, disconnect() {} };
       made.push(g); return g;
     },
     createOscillator() {
-      return { type: '', frequency: mkParam(440), connect(t) { return t; }, start() {}, stop() {} };
+      const o = {
+        type: '', frequency: mkParam(440), started: false, stopped: false,
+        connect(t) { return t; }, start() { this.started = true; }, stop() { this.stopped = true; }
+      };
+      osc.push(o); return o;
     },
     createBiquadFilter() {
       return { type: '', frequency: mkParam(1000), Q: mkParam(1), connect(t) { return t; } };
     },
     createBuffer(ch, n) { const d = new Float32Array(n); return { getChannelData: () => d }; },
-    createBufferSource() { return { buffer: null, loop: false, connect(t) { return t; }, start() {}, stop() {} }; }
+    createBufferSource() {
+      const s = {
+        buffer: null, loop: false, started: false, stopped: false,
+        connect(t) { return t; }, start() { this.started = true; }, stop() { this.stopped = true; }
+      };
+      srcs.push(s); return s;
+    }
   };
   if (withShaper) {
     ctx.createWaveShaper = () => {
@@ -48,6 +61,8 @@ function mkCtx(withShaper) {
     };
   }
   ctx._made = made;
+  ctx._osc = osc;
+  ctx._src = srcs;
   return ctx;
 }
 
@@ -105,6 +120,70 @@ function mkCtx(withShaper) {
   const before = A._budget;
   A.weapon('pistol');
   ck('音效关闭时静默', A._budget === before, 'budget ' + before + ' → ' + A._budget);
+  A.enabled = true;
+}
+
+/* 6. 每个命名音效都真能发出声：拼错函数名 / 参数写反，只有到真机上才会暴露，
+      所以在这里按真实链路逐条放一遍（每条前重置发声预算，否则后半段会被预算挡掉） */
+{
+  const ctx = mkCtx(true);
+  A.ctx = ctx; A._gain = null; A._curve = null; A.enabled = true;
+  const names = ['zap', 'boom', 'pop', 'scream', 'spit', 'tinnitus', 'hurt', 'hit', 'pickup', 'ui',
+    'splash', 'steam', 'qi', 'chain', 'execute', 'shotgun', 'flame', 'frost'];
+  const dead = [];
+  for (const n of names) {
+    A._budget = 0; A._budgetT = 0;
+    const before = ctx._made.length;
+    try {
+      if (n === 'splash') A.splash(true);
+      else if (n === 'flame') A.flame(true);
+      else if (n === 'frost') A.frost(true);
+      else A[n]();
+      if (ctx._made.length === before) dead.push(n + '(没建节点)');
+    } catch (e) { dead.push(n + '(' + e.message + ')'); }
+  }
+  ck('18 个命名音效都能发声且不抛异常', dead.length === 0, dead.join(', ') || '全部有声');
+}
+
+/* 7. 持续光束（红莲 / 熔核）：常驻声部只建一次，停光必须把节点停掉。
+      漏停一次就是一条永远停不下来的嗡鸣 —— 比"没声音"难查得多。 */
+{
+  const ctx = mkCtx(true);
+  A.ctx = ctx; A._gain = null; A._curve = null; A.enabled = true;
+  A._budget = 0; A._budgetT = 0;
+  A.beamOff();
+
+  A.beam(false);
+  const v = A._beam;
+  const firstFreq = ctx._osc.length ? ctx._osc[0].frequency.value : -1;
+  ck('持续光束建立了常驻声部', !!v && !!v.g);
+  ck('声部含 3 个振荡器 + 1 个噪声源', !!v && v.stopNodes.length === 4,
+    v ? v.stopNodes.length + ' 个' : '-');
+  ck('起手就发声（振荡器都 start 了）', ctx._osc.every(o => o.started) && ctx._src.every(s => s.started));
+  ck('红莲基频 168Hz', Math.abs(firstFreq - 168) < 0.01, firstFreq + 'Hz');
+
+  const oscN = ctx._osc.length;
+  const madeN = ctx._made.length;
+  A.beam(false);
+  ck('续期复用同一个声部（不新建节点）',
+    A._beam === v && ctx._osc.length === oscN && ctx._made.length === madeN,
+    (ctx._osc.length - oscN) + ' 个新振荡器');
+
+  A.beamOff();
+  ck('停光释放声部', A._beam === null);
+  ck('停光停掉所有发声节点', ctx._osc.every(o => o.stopped) && ctx._src.every(s => s.stopped));
+
+  A.beam(true);
+  const meltFreq = ctx._osc[ctx._osc.length - 3].frequency.value;
+  ck('熔核另起声部', A._beam !== null && A._beam !== v);
+  ck('熔核基频更低（84Hz）', Math.abs(meltFreq - 84) < 0.01, meltFreq + 'Hz');
+  const meltOsc = ctx._osc.slice();
+  A.beamOff();
+  ck('熔核停光也停节点', meltOsc.every(o => o.stopped));
+
+  A.enabled = false;
+  A.beam(false);
+  ck('关掉音效时不会起嗡鸣', A._beam === null);
   A.enabled = true;
 }
 

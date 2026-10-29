@@ -23,7 +23,8 @@
     return {
       v: 1,
       gold: 0,
-      chars: ['soldier'],
+      /* 角色只剩鲸鱼娘一个：这个数组留着是为了老存档能平滑迁移 */
+      chars: ['whale'],
       perm: { hp: 0, dmg: 0, spd: 0, luck: 0, greed: 0, revive: 0 },
       wins: 0,
       /* 各地图通关次数：解锁改成"通关前一关"（顺序推进），不再按累计次数 */
@@ -45,6 +46,8 @@
       bgm: true,
       vib: true,
       fxLow: false,
+      /* 角色朝向跟随移动方向（关掉 = 永远正面朝镜头） */
+      turnView: true,
       /* 云存档合并用：谁的时间新用谁的 */
       updatedAt: 0
     };
@@ -84,6 +87,14 @@
     d.unlockedMaps = out;
   }
 
+  /* 四个可选角色已经被鲸鱼娘顶掉：老存档里存的 soldier/medic/... 一律并成 whale，
+     否则 game.js 里 D.chars[charId] 取不到人，会退回默认值但界面仍显示旧角色名 */
+  function migrateChars(d) {
+    if (!d.chars || !d.chars.length || d.chars.length !== 1 || d.chars[0] !== 'whale') {
+      d.chars = ['whale'];
+    }
+  }
+
   /** 把一份原始存档填进目标对象（就地填，保持引用不变） */
   function fill(d, raw) {
     if (typeof raw === 'string' && raw) {
@@ -99,6 +110,7 @@
       }
     }
     migrateMaps(d);
+    migrateChars(d);
     return d;
   }
 
@@ -170,7 +182,8 @@
       if (arr.indexOf(id) < 0) { arr.push(id); Save.flush(); }
     },
 
-    hasChar: function (id) { return Save.data.chars.indexOf(id) >= 0; },
+    /* 只有一个角色，永远为真；保留接口是因为云存档和旧代码还在调 */
+    hasChar: function (id) { return id === 'whale'; },
 
     unlockMap: function (id) {
       if (Save.data.unlockedMaps.indexOf(id) < 0) {

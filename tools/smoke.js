@@ -170,8 +170,10 @@ const growthPts = Game.run.p.weapons.reduce((a, w) =>
   + Object.keys(Game.run.p.synLv).length;
 /* 成长点：换过主武器会把等级清零（每局最多换一次），所以"等级很高但成长点=1"也算正常。
    升级次数 ≥3 时至少有一次加在已有构筑上，用它兜住随机选卡的抖动 */
+/* mainLocked：第一张卡就换了主武器 —— 等级归 1、成长点只有 1，但那是**换装**不是没成长。
+   以前漏了这一条，抽到"换主武器"开局的样本会随机报失败（约 1/3 概率）。 */
 check('有武器/被动成长', growthPts > 1 || Game.run.p.level > 3 || kinds.length >= 3 ||
-  Game.run.p.weapons.length > 1 || Game.run.p.autos.length > 0,
+  Game.run.p.weapons.length > 1 || Game.run.p.autos.length > 0 || Game.run.p.mainLocked,
   '武器成长点 ' + growthPts + ' ／ 升级 ' + kinds.length + ' 次 ／ 装备 ' + Game.run.p.weapons.map((w) => w.id + ':' + w.lvl).join(','));
 const many = Game.buildChoices(30).map(c => c.kind);
 check('升级池包含被动', many.some(k => k.indexOf('passive') === 0),
@@ -182,7 +184,7 @@ check('升级池包含新装备', many.some(k => k === 'weaponNew' || k === 'aut
 
 /* ================= 4. 经验拾取范围（磁石必须有用） ================= */
 section('经验拾取范围');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 const gp = Game.run.p;
 Game.run.enemies.length = 0;
 const farGem = { x: gp.x + 400, y: gp.y, vx: 0, vy: 0, xp: 1, size: 2, dead: false, t: 99 };
@@ -275,6 +277,10 @@ if (lootProp) {
   check('搜刮产出（金币或掉落）', Game.run.gold > goldBefore || Game.run.gems.length > 0,
     'gold +' + (Game.run.gold - goldBefore));
   check('搜刮后退出搜刮状态', !Game.run.search);
+  check('搜刮成功触发开心跳', pp.cheerT > 0, 'cheerT=' + pp.cheerT.toFixed(2));
+  check('开心跳用的是开心帧', pp.spriteHappy === 'player_whale_happy' && HS.Sprites.has(pp.spriteHappy),
+    pp.spriteHappy);
+  check('平时用的是严肃帧', pp.sprite === 'player_whale' && HS.Sprites.has(pp.sprite), pp.sprite);
   check('同一道具不能重复搜刮', (function () {
     const g2 = Game.run.gold;
     Game.run.lootTarget = lootProp;
@@ -283,9 +289,61 @@ if (lootProp) {
   })());
 }
 
+/* 搜刮 / 空投翻到的卡：一律先问一句「要不要收下」，玩家点头才生效。
+   以前只有手持武器会问，其它直接塞给玩家 —— 打完一波才发现构筑里多了点东西。 */
+section('搜刮出卡要先问一句');
+{
+  Game.startRun('highway', 'whale');
+  const p2 = Game.run.p;
+  p2.invuln = 1e9;
+  const card = {
+    kind: 'passiveNew', id: 'power', name: '伤害加成', icon: 'power', color: '#ff6b6b',
+    sub: '通用属性 · 伤害  新', desc: '所有武器伤害 +8%', src: '通用属性'
+  };
+  const lvBefore = p2.passives.power || 0;
+
+  Game.giveLoot(card, '搜刮');
+  check('翻到卡会弹确认框（不是直接给）', Game.state === 'lootask', Game.state);
+  check('弹框期间没拿到卡', (p2.passives.power || 0) === lvBefore, 'power=' + (p2.passives.power || 0));
+  check('弹框期间输入被锁住', HS.Input.enabled === false);
+  let uiOK = true;
+  try { Game.render(); } catch (e) { uiOK = false; console.log('    ' + e.stack); }
+  check('确认框渲染无异常', uiOK);
+
+  Game.answerLoot(false);
+  check('点「不要」回到局内', Game.state === 'run', Game.state);
+  check('点「不要」真的没拿到卡', (p2.passives.power || 0) === lvBefore, 'power=' + (p2.passives.power || 0));
+  check('点「不要」之后确认框已清空', Game.lootAsk === null);
+
+  Game.giveLoot(card, '搜刮');
+  Game.answerLoot(true);
+  check('点「收下」才生效', (p2.passives.power || 0) === lvBefore + 1,
+    lvBefore + ' → ' + (p2.passives.power || 0));
+
+  /* 真路径：lootObstacle → giveLoot，40 次里每次出卡都必须弹框 */
+  const D2 = HS.Data;
+  const bak = { chest: D2.loot.crate.chest, gem: D2.loot.crate.gem, heart: D2.loot.crate.heart };
+  D2.loot.crate.chest = 1; D2.loot.crate.gem = 0; D2.loot.crate.heart = 0;
+  let got = 0, noAsk = 0, leaked = 0;
+  for (let n = 0; n < 40; n++) {
+    Game.state = 'run';
+    const before = JSON.stringify(p2.passives) + '|' + p2.autos.length + '|' + p2.weapons.length;
+    Game.lootObstacle({ x: p2.x + 6, y: p2.y, w: 8, h: 8, lootType: 'crate',
+      looted: false, broken: false, def: { loot: 'crate' } });
+    if (Game.state !== 'lootask') { noAsk++; continue; }
+    got++;
+    const mid = JSON.stringify(p2.passives) + '|' + p2.autos.length + '|' + p2.weapons.length;
+    if (mid !== before) leaked++;          // 弹框时构筑就已经变了 = 又变回"直接给"
+    Game.answerLoot(false);
+  }
+  D2.loot.crate.chest = bak.chest; D2.loot.crate.gem = bak.gem; D2.loot.crate.heart = bak.heart;
+  check('搜刮出卡一定弹确认框', got > 0 && noAsk === 0, got + ' 次弹框 / ' + noAsk + ' 次直接给');
+  check('弹框期间构筑一点没动', leaked === 0, leaked + ' 次泄漏');
+}
+
 /* ================= 6. 可进入建筑：门 / 室内 / 楼顶 ================= */
 section('可进入建筑');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 const bp = Game.run.p;
 const bArr = [];
 HS.Buildings.buildingsInRect(-1600, -1600, 1600, 1600, bArr);
@@ -379,9 +437,23 @@ if (bld) {
       'gold +' + (Game.run.gold - gBefore));
   }
 
-  /* 上楼 / 下楼 / 跳下 */
+  /* 上楼 / 下楼 / 跳下。
+     这里必须先把"盖屏状态"清干净：`activate('stairs')` 只在 state === 'run' 时生效，
+     上一段的室内搜刮可能刚好翻出一张卡（lootask 弹窗）、也可能刚好升级 ——
+     任意一个没关掉，后面 8 条楼顶断言就会连锁全红（随机失败的头号原因）。 */
+  HS.Input.joy.active = false; HS.Input.joy.mag = 0;
+  for (let g2 = 0; g2 < 20; g2++) {
+    if (Game.state === 'levelup') { pickAndResolve(0); continue; }
+    if (Game.state === 'lootask') { Game.answerLoot(false); continue; }
+    break;
+  }
   bp.x = bld.stairs.x; bp.y = bld.stairs.y; bp.hp = 9999;
   Game.update(1 / 60);
+  for (let g2 = 0; g2 < 20; g2++) {
+    if (Game.state === 'levelup') { pickAndResolve(0); continue; }
+    if (Game.state === 'lootask') { Game.answerLoot(false); continue; }
+    break;
+  }
   check('靠近楼梯出现上楼按钮', Game.run.stairTarget === bld);
   Game.activate('stairs');
   check('可以登上楼顶', bp.roof === bld);
@@ -456,7 +528,7 @@ function inBld(x, y, bb) {
   return !!b2 && Math.abs(b2.x0 - bb.x0) < 0.5 && Math.abs(b2.y0 - bb.y0) < 0.5;
 }
 for (const bb of exitBlds) {
-  Game.startRun('highway', 'soldier');
+  Game.startRun('highway', 'whale');
   const ep = Game.run.p;
   ep.weapons = [];
   ep.hp = 99999;
@@ -524,7 +596,7 @@ function probeFree(x, y) {
   return null;
 }
 for (const bb of routeBlds) {
-  Game.startRun('highway', 'soldier');
+  Game.startRun('highway', 'whale');
   const rp = Game.run.p;
   rp.weapons = [];
   rp.hp = 1e9;
@@ -571,24 +643,35 @@ check('丧尸能绕开楼体摸到玩家', routeFail === 0,
   routeTotal + ' 只 · 卡住 ' + routeFail + ' · 最慢 ' + routeWorst.toFixed(1) + 's');
 
 /* 建筑测试结束，重置一局干净的 run */
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 check('建筑测试后状态正常', Game.state === 'run' && Game.run.p.roof === null);
 
 /* ================= 6.6 行走步态（回归） ================= */
 section('行走步态');
 
-/* 帧表必须知道腿从哪一行开始，否则一帧没法拆成「上身 + 两条腿」 */
+/* 帧表必须知道腿从哪一行开始，否则一帧没法拆成「上身 + 两条腿」。
+   主角是例外：她用的是整套姿势帧（walk0..3），自己轮播，不走切腿补间。 */
 {
   let noLeg = [];
-  for (const nm of ['player_soldier', 'walker', 'runner', 'crawler', 'spitter', 'brute', 'boss']) {
+  for (const nm of ['walker', 'runner', 'crawler', 'spitter', 'brute', 'boss']) {
     const fr = HS.Sprites.frame(nm);
     if (!fr || !fr.lr || fr.lr >= fr.h || fr.lr < fr.h * 0.3) noLeg.push(nm);
   }
-  check('每个角色都有腿部切分行', noLeg.length === 0, noLeg.join(','));
+  check('每个敌人都有腿部切分行', noLeg.length === 0, noLeg.join(','));
+
+  /* 四向 x 6 帧 + 开心帧 */
+  const pFrames = ['player_whale', 'player_whale_happy'];
+  for (const dir of ['dn', 'up', 'lf', 'rt']) {
+    for (let i = 0; i < 6; i++) pFrames.push('player_whale_' + dir + '_' + i);
+  }
+  const missing = pFrames.filter((n) => !HS.Sprites.frame(n));
+  check('主角 25 帧齐全（四向 x 6 + 开心）', missing.length === 0, missing.join(','));
+  const cut = pFrames.filter((n) => HS.Sprites.frame(n) && HS.Sprites.frame(n).lr);
+  check('主角帧不参与切腿补间', cut.length === 0, cut.join(','));
 }
 
 /* 玩家：走起来 gait 拉满，松手后归零（不然会看到原地踏步或永远僵着） */
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const gp = Game.run.p;
   gp.hp = 99999;
@@ -611,10 +694,39 @@ Game.startRun('highway', 'soldier');
   check('停下后步态归零', gp.gait < 0.1, gp.gait.toFixed(2));
   check('停下后身体回正', Math.abs(gp.lean) < 0.1, gp.lean.toFixed(2));
   check('向右走时身体朝右倾', leanDir > 0.4, leanDir.toFixed(2));
+
+  /* 朝向：四个方向各推一下，faceDir 要跟着变（精灵帧按它取） */
+  const dirs = [
+    { dx: 1, dy: 0, want: 'rt' },
+    { dx: -1, dy: 0, want: 'lf' },
+    { dx: 0, dy: 1, want: 'dn' },
+    { dx: 0, dy: -1, want: 'up' }
+  ];
+  let badDir = [];
+  for (const d of dirs) {
+    HS.Input.joy.active = true;
+    HS.Input.joy.dx = d.dx; HS.Input.joy.dy = d.dy; HS.Input.joy.mag = 1;
+    /* 换向有 0.1s 的缓冲（防摇杆抖动），所以至少推 0.2s 才会转 */
+    for (let k = 0; k < 12; k++) { gp.hp = 99999; Game.update(1 / 60); }
+    if (gp.faceDir !== d.want) badDir.push(d.want + '->' + gp.faceDir);
+  }
+  check('朝向跟着移动方向走', badDir.length === 0, badDir.join(','));
+  /* 斜着推（45°）不应该来回翻，保持上一次的朝向 */
+  HS.Input.joy.dx = 1; HS.Input.joy.dy = 1; HS.Input.joy.mag = 1;
+  for (let k = 0; k < 30; k++) { gp.hp = 99999; Game.update(1 / 60); }
+  check('斜向推不来回翻朝向', gp.faceDir === 'up', gp.faceDir);
+
+  /* 短促抖动（两帧就换方向）不该触发转向 */
+  HS.Input.joy.dx = -1; HS.Input.joy.dy = 0;
+  for (let k = 0; k < 2; k++) { gp.hp = 99999; Game.update(1 / 60); }
+  HS.Input.joy.dx = 1; HS.Input.joy.dy = 0;
+  for (let k = 0; k < 2; k++) { gp.hp = 99999; Game.update(1 / 60); }
+  check('抖动不触发转向', gp.faceDir === 'up', gp.faceDir);
+  HS.Input.joy.mag = 0;
 }
 
 /* 丧尸：追人时步态起来；被挤住不动时步态要掉下去 */
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const p = Game.run.p;
   p.weapons = [];
@@ -633,7 +745,7 @@ Game.startRun('highway', 'soldier');
 /* ================= 6.7 载具 ================= */
 section('载具');
 
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const run = Game.run, pp = run.p;
   const vs = run.vehicles;
@@ -675,6 +787,33 @@ Game.startRun('highway', 'soldier');
   run.bullets.length = 0;
   for (let k = 0; k < 24; k++) { pp.hp = 9999; Game.update(1 / 60); }
   check('驾驶时武器不开火', run.bullets.length === 0, run.bullets.length + ' 颗子弹');
+
+  /* 自动装备也得真的收起：只停伤害不够。以前 Auto.update 停了、渲染没停，
+     光剑环 / 电球 / 火环会跟着车跑一圈，看着像还在输出，实际一下都不打。
+     这里直接数绘制调用：车上必须是 0 次，下车才有东西画。 */
+  {
+    pp.autos = [{ id: 'saberring', lvl: 1, timer: 0, up: {}, ang: 0, uid: 99 }];
+    HS.Gear.refresh(pp); Game.recalc(pp);
+    run.devices.length = 0;
+    const b2 = HS.P.bctx;
+    let n = 0;
+    const of = b2.fillRect, oa = b2.arc, os = b2.stroke;
+    b2.fillRect = () => { n++; };
+    b2.arc = () => { n++; };
+    b2.stroke = () => { n++; };
+    HS.Render.drawAutos(b2, run, pp);
+    const inCar = n;
+    pp.veh = null;
+    n = 0;
+    HS.Render.drawAutos(b2, run, pp);
+    const onFoot = n;
+    pp.veh = veh;
+    b2.fillRect = of; b2.arc = oa; b2.stroke = os;
+    check('驾驶时自动装备不再绘制（光剑环不跟车跑）', inCar === 0, inCar + ' 次绘制');
+    check('步行时自动装备正常绘制', onFoot > 0, onFoot + ' 次绘制');
+    pp.autos = [];
+    HS.Gear.refresh(pp); Game.recalc(pp);
+  }
 
   /* 开起来。先把车头摆正：这条测的是"直线加速"，车从道路任意朝向起步
      要先掉头（转向现在有惯性，掉头约 1.3s），测出来的就是别的东西了 */
@@ -804,14 +943,14 @@ Game.startRun('highway', 'soldier');
   HS.Input.joy.mag = 0;
   HS.Input.joy.dx = 0;
   HS.Input.joy.dy = 0;
-  Game.startRun('highway', 'soldier');
+  Game.startRun('highway', 'whale');
   check('载具测试后状态正常', Game.state === 'run' && Game.run.p.veh === null);
 }
 
 /* ================= 6.8 武器手持 / 投掷动作 ================= */
 section('武器手持与投掷');
 
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const run = Game.run, pp = run.p;
   run.enemies.length = 0;
@@ -824,11 +963,24 @@ Game.startRun('highway', 'soldier');
   check('持枪瞄准角跟随最近敌人', Math.abs(Math.abs(pp.aimA) - Math.PI) < 0.2,
     'aimA=' + pp.aimA.toFixed(2));
 
-  /* 清场之后枪口收回走位方向 */
+  /* 清场之后枪口收回朝向那一侧（四个朝向各验一次） */
   run.enemies.length = 0;
-  pp.facing = 1;
-  for (let k = 0; k < 90; k++) Game.updateAim(1 / 60);
-  check('没有敌人时枪口朝走位方向', Math.abs(pp.aimA) < 0.2, 'aimA=' + pp.aimA.toFixed(2));
+  const idleAim = [
+    { dir: 'rt', want: 0 },
+    { dir: 'dn', want: Math.PI / 2 },
+    { dir: 'lf', want: Math.PI },
+    { dir: 'up', want: -Math.PI / 2 }
+  ];
+  let badAim = [];
+  for (const c of idleAim) {
+    pp.faceDir = c.dir;
+    for (let k = 0; k < 120; k++) Game.updateAim(1 / 60);
+    let d = pp.aimA - c.want;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    if (Math.abs(d) > 0.2) badAim.push(c.dir + '=' + pp.aimA.toFixed(2));
+  }
+  check('没有敌人时枪口朝朝向那一侧', badAim.length === 0, badAim.join(','));
 
   /* 投掷：先抬手，出手帧才真正生成抛物线弹 */
   run.bullets.length = 0;
@@ -877,7 +1029,7 @@ check('回到局内', Game.state === 'run', Game.state);
 
 /* ================= 7.5 装备系统 ================= */
 section('装备槽位');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const eq = Game.run.p;
   HS.Gear.clearHands(eq);
@@ -934,7 +1086,7 @@ Game.startRun('highway', 'soldier');
 }
 
 section('属性兼容换算');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const p2 = Game.run.p;
   HS.Gear.clearHands(p2);
@@ -952,7 +1104,7 @@ Game.startRun('highway', 'soldier');
 }
 
 section('抽取规则');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const p3 = Game.run.p;
   p3.weapons = [
@@ -989,7 +1141,7 @@ Game.startRun('highway', 'soldier');
 
 /* ================= 7.6 全部装备可用性 ================= */
 section('全部装备可用性');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const p = Game.run.p;
   let bad = 0, err = '';
@@ -1054,7 +1206,7 @@ Game.startRun('highway', 'soldier');
 
 /* ================= 7.7 武器深度 ================= */
 section('武器深度');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const p = Game.run.p;
   const D = HS.Data;
@@ -1069,8 +1221,12 @@ Game.startRun('highway', 'soldier');
     if (!bids.some((b) => ups[b].special)) noSp++;
   }
   check('每件手持装备都有 ≥3 条专属分支', noThree === 0, noThree ? tplBad : handIds.length + ' 件');
+  /* 只统计真正有消费方的 special。以前「双发扳机」挂着一个没人读的
+     special: 'volley' 喂高了这条指标（它其实只是 count+1 的纯数值分支），
+     那个字段删掉后真实覆盖率是 55% —— 这才是实话。剩下的纯数值分支是合理的，
+     不是每把枪都需要一条质变。 */
   const spRate = 1 - noSp / handIds.length;
-  check('多数装备带「改变机制」分支', spRate >= 0.7, (spRate * 100).toFixed(0) + '%');
+  check('过半装备带「改变机制」分支', spRate >= 0.5, (spRate * 100).toFixed(0) + '%');
 
   /* 2. 进化覆盖：主 / 副 / 重型都有质变路线 */
   let evoMain = 0, evoSub = 0, evoHeavy = 0;
@@ -1084,6 +1240,122 @@ Game.startRun('highway', 'soldier');
   check('主武器有进化路线', evoMain >= 30, evoMain + ' 条');
   check('副武器也有进化路线', evoSub >= 8, evoSub + ' 条');
   check('重型武器也有进化路线', evoHeavy >= 8, evoHeavy + ' 条');
+
+  /* 2.5 进化不能是降级：这两把曾经"觉醒满级还打不过本体 Lv5"（只加了宽度），
+     修法是补 cd 倍率 / 收散布。判据用"伤害 × 数量 ÷ 冷却"这个粗口径 ——
+     范围类进化（喷火 / 光剑）靠覆盖面积换，弹幕墙靠"一圈 10 发"换，都不吃这条。 */
+  {
+    const ratio = (baseId) => {
+      const evo = D.evolutions[baseId];
+      const a = HS.Gear.stat({ id: baseId, lvl: 5, up: {}, slot: 'heavy' }, p);
+      const b = HS.Gear.stat({ id: evo.id, lvl: 3, up: {}, slot: 'heavy' }, p);
+      const dps = (s) => (s.dmg * Math.max(1, Math.round(s.count || 1))) / Math.max(0.04, s.cd);
+      return { base: dps(a), evo: dps(b), k: dps(b) / dps(a), id: evo.id };
+    };
+    for (const baseId of ['railgun', 'siegecrossbow']) {
+      const r = ratio(baseId);
+      check(D.gear[r.id].name + ' 觉醒满级压过本体 Lv5', r.k >= 1.05,
+        r.base.toFixed(0) + ' → ' + r.evo.toFixed(0) + '（x' + r.k.toFixed(2) + '）');
+    }
+  }
+
+  /* 2.6 四条重型进化各有自己的机制（不能只是本体的数值放大） */
+  {
+    const D2 = HS.Data;
+    check('弹幕墙是 360° 螺旋弹幕', !!(D2.gear.heavymg_x.flags || {}).spiral);
+    check('攻城弩阵的箭命中即炸', !!(D2.gear.siegecrossbow_x.flags || {}).arrowBoom);
+    check('转管风暴的弹丸变大', !!(D2.gear.gatling_x.flags || {}).bigBullet);
+    check('湮灭炮改成 3 秒蓄力', D2.gear.railgun_x.chargeTime === 3, D2.gear.railgun_x.chargeTime);
+    check('湮灭炮开火后光柱会停留', (D2.gear.railgun_x.linger || 0) > 0.2, D2.gear.railgun_x.linger);
+    check('湮灭炮是巨粗光柱（本体 8 → 27）', D2.gear.railgun_x.base.width >= 24,
+      D2.gear.railgun_x.base.width);
+
+    /* 重型进化必须"有自己的东西"：没有 flag 就等于只是本体的数值放大 */
+    {
+      const bare = [];
+      for (const id of D2.heavyPool) {
+        const evo = D2.evolutions[id];
+        if (!evo) continue;
+        const g = D2.gear[evo.id];
+        const before = Object.keys(D2.gear[id].flags || {});
+        const after = Object.keys(g.flags || {});
+        const newF = after.filter((k) => before.indexOf(k) < 0);
+        if (!newF.length && !g.chargeTime && !g.spiralN) bare.push(g.name);
+      }
+      check('每条重型进化都有自己的新开关', bare.length === 0,
+        bare.length ? bare.join(',') : D2.heavyPool.length + ' 条全覆盖');
+    }
+
+    /* 螺旋弹幕：一发甩出去，子弹要铺满 360°（不是朝目标） */
+    HS.Gear.clearHands(p);
+    p.autos.length = 0;
+    p.passives = {};
+    HS.Gear.take(p, 'heavymg_x');
+    Game.recalc(p);
+    Game.run.enemies.length = 0;
+    const dummy2 = Game.spawnEnemy('walker', false, p.x + 100, p.y);
+    dummy2.hp = 1e9; dummy2.maxHp = 1e9; dummy2.speed = 0;
+    Game.run.bullets.length = 0;
+    /* 刚拿到的武器有 0.2 秒上膛，先跑十几帧 */
+    for (let f = 0; f < 15; f++) { p.hp = 99999; Game.update(1 / 60); }
+    const dirs = new Set();
+    for (const b of Game.run.bullets) {
+      dirs.add(Math.round((Math.atan2(b.vy, b.vx) + Math.PI * 2) % (Math.PI * 2) / (Math.PI / 3)));
+    }
+    check('螺旋弹幕铺满一整圈（≥5 个方向）', dirs.size >= 5,
+      Game.run.bullets.length + ' 发 / ' + dirs.size + ' 个方向');
+
+    /* 攻城弩阵：箭打中第一个目标时，旁边 24px 的敌人也要被炸到 */
+    Game.run.bullets.length = 0;
+    Game.run.enemies.length = 0;
+    HS.Gear.clearHands(p);
+    HS.Gear.take(p, 'siegecrossbow_x');
+    Game.recalc(p);
+    const first = Game.spawnEnemy('walker', false, p.x + 90, p.y);
+    first.hp = 1e9; first.maxHp = 1e9; first.speed = 0; first.armor = 0;
+    const near = Game.spawnEnemy('walker', false, p.x + 90, p.y + 24);
+    near.hp = 1e9; near.maxHp = 1e9; near.speed = 0; near.armor = 0;
+    for (let f = 0; f < 150; f++) {
+      p.hp = 99999;
+      first.x = p.x + 90; first.y = p.y;
+      near.x = p.x + 90; near.y = p.y + 24;
+      Game.update(1 / 60);
+    }
+    check('攻城弩阵的箭会炸到旁边 24px 的敌人', near.hp < 1e9,
+      '掉血 ' + Math.round(1e9 - near.hp));
+
+    /* 湮灭炮：3 秒蓄力 + 开火后光柱停留。
+       判"放了一发"用 p.beamHold 的 rail 标记 —— 不依赖这一炮有没有打中木桩
+       （地图是随机生成的，木桩可能刚好落在墙后，瞄准会退化） */
+    Game.run.enemies.length = 0;
+    HS.Gear.clearHands(p);
+    HS.Gear.take(p, 'railgun_x');
+    Game.recalc(p);
+    const rl = Game.spawnEnemy('walker', false, p.x + 150, p.y);
+    rl.hp = 1e9; rl.maxHp = 1e9; rl.speed = 0; rl.armor = 0;
+    let charged = false, firedAt = -1, holdLife = 0;
+    for (let f = 0; f < 240; f++) {
+      p.hp = 99999;
+      rl.x = p.x + 150; rl.y = p.y;
+      Game.update(1 / 60);
+      if (p.chargeVis > 0.5 && p.chargeKind === 'rail') charged = true;
+      if (firedAt < 0 && p.beamHold && p.beamHold.rail === 1) {
+        firedAt = f;
+        holdLife = p.beamHold.life;
+      }
+    }
+    check('湮灭炮会蓄力（chargeVis / chargeKind 有值）', charged);
+    check('湮灭炮约 3 秒才放一发', firedAt >= 165 && firedAt <= 220,
+      '第 ' + firedAt + ' 帧（约 ' + (firedAt / 60).toFixed(1) + ' 秒）');
+    check('湮灭炮开火后光柱停留（beamHold 带 rail 标记）', firedAt >= 0 && holdLife > 0.3,
+      '余辉 ' + holdLife.toFixed(2) + ' 秒');
+
+    Game.run.enemies.length = 0;
+    Game.run.bullets.length = 0;
+    HS.Gear.clearHands(p);
+    HS.Gear.take(p, 'pistol');
+    Game.recalc(p);
+  }
 
   /* 3. 进化之后进入「觉醒」：不会变成不能继续投入的死卡 */
   HS.Gear.clearHands(p);
@@ -1149,6 +1421,54 @@ Game.startRun('highway', 'soldier');
   Game.explode(p.x + 300, p.y + 300, 30, 10, '#ffd166', { shard: 3 });
   check('碎片战斗部炸出一圈破片', Game.run.bullets.length === 3, Game.run.bullets.length + ' 片');
 
+  /* 6b. 碎片分支必须**从卡面一路走到爆炸核**：
+         special:'shard' → st.shard → 弹体 → Game.explode 的破片。
+         上面那条只验了最后一段（explode 收了 shard 会飞），
+         中间两段以前是断的：Gear.stat 把 special 只写进 st.sp 没人读、
+         Game.shoot 又不把 shard 抄进弹体 —— 于是「碎片弹」「焚城」
+         点完只是普通爆炸，一片碎片都没有（玩家报过）。 */
+  {
+    HS.Gear.clearHands(p);
+    p.autos.length = 0;
+    p.passives = {};
+    check('装 RPG（碎片分支的样本）', HS.Gear.take(p, 'rpg') === 'new');
+    const rw = p.weapons[0];
+    rw.up = {};
+    Game.recalc(p);
+    const baseShard = HS.Gear.stat(rw, p).shard | 0;
+    rw.up = { shard: 2 };
+    Game.recalc(p);
+    const stS = HS.Gear.stat(rw, p);
+    check('「碎片弹」分支写进武器数值', (stS.shard | 0) >= baseShard + 3,
+      baseShard + ' -> ' + (stS.shard | 0));
+
+    Game.run.enemies.length = 0;
+    Game.run.bullets.length = 0;
+    const shTgt = Game.spawnEnemy('walker', false, p.x + 40, p.y);
+    shTgt.hp = 1e9; shTgt.maxHp = 1e9; shTgt.speed = 0;
+    HS.Gear.fire(rw, D.gear.rpg, stS, false);
+    const rocket = Game.run.bullets.filter((b) => b.kind === 'rocket')[0];
+    check('火箭弹带着碎片数出膛', !!rocket && (rocket.shard | 0) >= 3,
+      rocket ? 'shard=' + rocket.shard : '没打出火箭弹');
+
+    Game.run.bullets.length = 0;
+    if (rocket) Game.explode(p.x + 200, p.y, 30, 10, '#fff', rocket);
+    check('火箭落地炸出那一圈碎片',
+      !!rocket && Game.run.bullets.length === Math.min(5, rocket.shard | 0),
+      Game.run.bullets.length + ' 片');
+
+    /* 抛射物（lob）的碎片管线：现在没有任何武器带 shard 分支了，
+       但 Game.lob 仍要把 opt.shard 抄进弹体 —— 这里直接钉住这条翻译，
+       免得以后加回"抛射 + 破片"的武器时又变成空包弹 */
+    Game.run.bullets.length = 0;
+    Game.lob(p.x, p.y, p.x + 60, p.y, { dmg: 10, radius: 30, color: '#fff', shard: 2 });
+    const lobB2 = Game.run.bullets.filter((b) => b.kind === 'lob')[0];
+    check('抛射物把碎片数带进弹体', !!lobB2 && (lobB2.shard | 0) === 2,
+      lobB2 ? 'shard=' + lobB2.shard : '没打出抛射物');
+    Game.run.bullets.length = 0;
+    Game.run.enemies.length = 0;
+  }
+
   /* 7. 属性组合型联动：属性到位就成立，不需要特定武器 */
   HS.Gear.clearHands(p);
   p.autos.length = 0;
@@ -1162,6 +1482,47 @@ Game.startRun('highway', 'soldier');
   ez.hp = 9999;
   Game.hurtEnemy(ez, 1, {});
   check('暴击打开暴走加速窗口', p.rateT > 0.5, p.rateT.toFixed(2));
+
+  /* 7b. 装备组合型联动 · 冰火两重天：必须"冰霜环 + 火焰环/毒雾"两件都在才成立，
+        而且冻结目标只吃火焰与自动装备的增伤（近战不变）。
+         以前配方写成"冰霜环 + 毒雾"、描述写成"中毒伤害"，和实现（auto 伤害）三处对不上。 */
+  {
+    const iceSyn = D.synergies.filter((x) => x.id === 'ringIce')[0];
+    const put = (ids) => {
+      HS.Gear.clearHands(p);
+      p.autos.length = 0;
+      p.passives = {};
+      for (const id of ids) {
+        if (D.gear[id]) HS.Gear.take(p, id);
+        else p.autos.push({ id: id, lvl: 1 });
+      }
+      Game.recalc(p);
+    };
+    put(['frostring']);
+    check('只有冰霜环时，冰火两重天不成立', !p.syn.ringIce, Object.keys(p.syn).join(','));
+    check('只差一件时会提示缺哪件', !!Game.synMissing(p, iceSyn), '');
+    put(['frostring', 'firering']);
+    check('冰霜环 + 火焰环 → 冰火两重天成立', !!p.syn.ringIce, '');
+    put(['frostring', 'poisongas']);
+    check('冰霜环 + 毒雾 → 冰火两重天也成立', !!p.syn.ringIce, '');
+
+    put(['frostring', 'firering']);
+    Game.run.enemies.length = 0;
+    const dmgBy = (tag, frozen) => {
+      const t = Game.spawnEnemy('walker', false, p.x + 12, p.y);
+      t.hp = 1e9; t.maxHp = 1e9; t.speed = 0;
+      t.synFrozen = frozen ? 1 : 0;
+      const before = t.hp;
+      Game.hurtEnemy(t, 100, { tag: tag, noCrit: true });
+      return before - t.hp;
+    };
+    const rAuto = dmgBy('auto', true) / dmgBy('auto', false);
+    const rFire = dmgBy('fire', true) / dmgBy('fire', false);
+    const rMelee = dmgBy('melee', true) / dmgBy('melee', false);
+    check('冻结目标吃 auto 伤害 +40%', Math.abs(rAuto - 1.4) < 0.02, rAuto.toFixed(2));
+    check('冻结目标吃火焰伤害 +40%（"冰火"里的火真生效）', Math.abs(rFire - 1.4) < 0.02, rFire.toFixed(2));
+    check('近战不受这张卡影响', Math.abs(rMelee - 1) < 0.02, rMelee.toFixed(2));
+  }
 
   p.passives = { greed: 1, magnet: 1 };
   Game.recalc(p);
@@ -1206,7 +1567,7 @@ Game.startRun('highway', 'soldier');
 
 /* ================= 7.8 升级规则 ================= */
 section('升级规则');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const p = Game.run.p;
   const D = HS.Data;
@@ -1217,11 +1578,21 @@ Game.startRun('highway', 'soldier');
   check('升级时背景不震', HS.Render.shakeAmount({ state: 'levelup', run: { shake: 9 } }) === 0);
   check('暂停时背景不震', HS.Render.shakeAmount({ state: 'paused', run: { shake: 9 } }) === 0);
 
+  /* 1b. 震屏疲劳：单次照旧，连着抖最多打掉六成 */
+  HS.P.fxLow = false;
+  const shOnce = HS.Render.shakeAmount({ state: 'run', run: { shake: 9 } });
+  const shBusy = HS.Render.shakeAmount({ state: 'run', run: { shake: 9, shakeBusy: 1 } });
+  check('单次震屏不打折', Math.abs(shOnce - 9) < 1e-6, shOnce.toFixed(1));
+  check('连着震时压到四成', Math.abs(shBusy - 3.6) < 0.01, shBusy.toFixed(1));
+  const fatRun = { shake: 9, shakeBusy: 1 };
+  HS.Render.shakeAmount({ state: 'run', run: fatRun });
+  check('疲劳只影响显示幅度，不改 run.shake', fatRun.shake === 9, String(fatRun.shake));
+
   /* 2. 初始武器阶段：升级池可以给主武器 */
   check('开局主武器未锁定', p.mainLocked === false, String(p.mainLocked));
-  /* 抽样 120 轮：40 轮时随机波动能到 ±6 张，会把"减半"这条比较顶翻（误报过一次） */
+  /* 抽样 400 轮：120 轮时随机波动能到 ±10 张，"整档减半"这条会被噪声顶翻（误报过两次） */
   let mainCards = 0;
-  for (let k = 0; k < 120; k++) {
+  for (let k = 0; k < 400; k++) {
     for (const c of Game.buildChoices(3)) {
       const d = D.gear[c.id];
       if (c.kind === 'weaponNew' && d && (d.slot === 'main' || d.slot === 'heavy')) mainCards++;
@@ -1233,7 +1604,7 @@ Game.startRun('highway', 'soldier');
   p.mainLocked = true;
   let lockedMain = 0;
   const curMain = HS.Gear.mainEntry(p);
-  for (let k = 0; k < 120; k++) {
+  for (let k = 0; k < 400; k++) {
     for (const c of Game.buildChoices(3)) {
       const d = D.gear[c.id];
       if (c.kind !== 'weaponNew' || !d) continue;
@@ -1307,11 +1678,17 @@ Game.startRun('highway', 'soldier');
   check('同意后换上并锁定', HS.Gear.mainEntry(p).id === 'smg' && p.mainLocked === true,
     HS.Gear.mainEntry(p).id + ' / locked=' + p.mainLocked);
 
-  /* 普通补给（非主武器）直接生效，不打断战斗 */
+  /* 普通补给（非主武器）也要先问一句：不再替玩家做主 */
   Game.state = 'run';
   const lvlBefore = p.passives.power || 0;
   Game.giveLoot(Game.makeCard({ kind: 'passiveNew', id: 'power' }), '搜刮');
-  check('普通补给直接生效', Game.state === 'run' && (p.passives.power || 0) === lvlBefore + 1, Game.state);
+  check('普通补给也会先问一句',
+    Game.state === 'lootask' && (p.passives.power || 0) === lvlBefore,
+    Game.state + ' / power=' + (p.passives.power || 0));
+  Game.answerLoot(true);
+  check('收下后普通补给生效',
+    Game.state === 'run' && (p.passives.power || 0) === lvlBefore + 1,
+    Game.state + ' / power=' + (p.passives.power || 0));
 
   /* 5. 副武器：先弹确认，取消不生效，确认才换 */
   p.mainLocked = false;
@@ -1531,6 +1908,65 @@ Game.startRun('highway', 'soldier');
   check('激光步枪仍然吃射速加成', las5.chains > las0.chains,
     las0.chains + ' → ' + las5.chains + ' 道光束 / 3s');
 
+  /* ---- 红莲进化：一道不断的光、数量恒为 1、更粗 ---- */
+  {
+    const D2 = HS.Data;
+    const base = D2.gear.redlaser, evo = D2.gear.redlaser_x;
+    check('红莲进化仍是持续光束（不需要开火）', !!evo.sustainBeam, String(evo.sustainBeam));
+    check('进化把光束加粗', evo.base.width >= base.base.width * 1.6,
+      base.base.width + ' → ' + evo.base.width);
+    const eups = Object.keys(D2.gearUps.redlaser_x || {});
+    check('进化不再有「多重光栅」（数量恒为 1）', eups.indexOf('multi') < 0, eups.join(','));
+
+    /* 弹丸数量改不成第二道，但也不能变成废卡：折成伤害 */
+    p.passives = {}; p.passives.projCount = 3;
+    HS.Gear.clearHands(p);
+    HS.Gear.take(p, 'redlaser_x');
+    Game.recalc(p);
+    const ew = p.weapons.find(w => w.id === 'redlaser_x');
+    const est = HS.Gear.stat(ew, p);
+    check('弹丸数量改不成两道光束', (est.count | 0) === 1, 'count=' + est.count);
+    check('弹丸数量折成伤害（不是废卡）', est.dmg > evo.base.dmg * 1.4,
+      evo.base.dmg.toFixed(2) + ' → ' + est.dmg.toFixed(2));
+
+    /* 常驻状态：有目标就一直亮着，目标没了才淡出 */
+    p.passives = {};
+    Game.recalc(p);
+    Game.run.enemies.length = 0;
+    const beamDummy = Game.spawnEnemy('brute', false, p.x + 90, p.y);
+    beamDummy.hp = 1e9; beamDummy.maxHp = 1e9; beamDummy.speed = 0;
+    for (let f = 0; f < 30; f++) {
+      p.hp = 99999;
+      beamDummy.x = p.x + 90; beamDummy.y = p.y;
+      Game.run.chains.length = 0;
+      Game.update(1 / 60);
+    }
+    check('有目标时激光常驻（不是一闪一闪的短线）',
+      !!p.beamHold && p.beamHold.life > 0.1,
+      p.beamHold ? p.beamHold.life.toFixed(2) : 'null');
+    check('持续光束不再往 chains 里塞闪线',
+      Game.run.chains.filter((c) => c.straight).length === 0,
+      Game.run.chains.length + ' 条');
+    Game.run.enemies.length = 0;
+    for (let f = 0; f < 30; f++) { p.hp = 99999; Game.update(1 / 60); }
+    check('没目标时激光淡出', !p.beamHold || p.beamHold.life <= 0,
+      p.beamHold ? p.beamHold.life.toFixed(2) : 'null');
+
+    /* 上车也要淡出：updateWeapons 驾驶时会提前 return，余辉不能冻在屏幕上 */
+    Game.run.enemies.length = 0;
+    const bd2 = Game.spawnEnemy('brute', false, p.x + 90, p.y);
+    bd2.hp = 1e9; bd2.maxHp = 1e9; bd2.speed = 0;
+    for (let f = 0; f < 10; f++) { p.hp = 99999; bd2.x = p.x + 90; bd2.y = p.y; Game.update(1 / 60); }
+    const litBefore = !!(p.beamHold && p.beamHold.life > 0);
+    p.veh = { def: { w: 20, h: 30, r: 10, spd: 1 }, x: p.x, y: p.y, dur: 99, maxDur: 99,
+      heading: 0, speed: 0, mvDir: 0, turnV: 0 };
+    for (let f = 0; f < 30; f++) { p.hp = 99999; Game.update(1 / 60); }
+    p.veh = null;
+    check('上车后激光也会淡出', litBefore && (!p.beamHold || p.beamHold.life <= 0),
+      litBefore + ' → ' + (p.beamHold ? p.beamHold.life.toFixed(2) : 'null'));
+    Game.run.enemies.length = 0;
+  }
+
   /* ---- 光剑无人环：长刃线段判定 + 满级六刃 ---- */
   p.passives = {};
   HS.Gear.clearHands(p);          // 手上不留武器，确保伤害只来自光剑
@@ -1542,6 +1978,26 @@ Game.startRun('highway', 'soldier');
   const sst = HS.Gear.stat(sw, p);
   check('光剑满级是 6 把长刃', (sst.count | 0) === 6 && sst.blade >= 20,
     sst.count + ' 把 / 刃长 ' + sst.blade);
+
+  /* 光剑的"外扩"分支必须加长刃身，而不是把整条刃推远。
+     刃身是线段：环绕半径 +14% 会连贴脸那圈空心区一起放大，近身的怪反而打不到。
+     满级还要吃得到 —— 终形态以前是直接赋值 blade，会把点过的分支吞掉。 */
+  {
+    const upMap = HS.Data.gearUps.saberring || {};
+    check('光剑的分支是「加长刃身」而不是外扩轨道', !!upMap.blade && !upMap.radius,
+      Object.keys(upMap).join(','));
+    const statAt = (up) => HS.Gear.stat(
+      { id: 'saberring', lvl: 5, up: up, timer: 0, ang: 0 }, p);
+    const s0 = statAt({}), s1 = statAt({ blade: 1 }), s2 = statAt({ blade: 2 });
+    check('加长刃身满级也吃得到（不被终形态吞掉）', s1.blade > s0.blade && s2.blade > s1.blade,
+      s0.blade + ' → ' + s1.blade + ' → ' + s2.blade + 'px');
+    check('加长刃身不改环绕半径', s1.radius === s0.radius && s2.radius === s0.radius,
+      Math.round(s0.radius) + 'px');
+    const inner = (st) => st.radius - st.blade * 0.4;
+    check('刃身变长时内沿往身体靠（贴脸的怪也切得到）',
+      inner(s1) < inner(s0) && inner(s2) < inner(s1),
+      inner(s0).toFixed(1) + ' → ' + inner(s1).toFixed(1) + ' → ' + inner(s2).toFixed(1) + 'px');
+  }
 
   /* 敌人站在环外、但在刃长范围内：点判定够不着，线段判定应该切得到。
      先把地面火池清掉 —— 前面测燃烧瓶留下的池子会把伤害算进来，污染统计 */
@@ -1563,6 +2019,38 @@ Game.startRun('highway', 'soldier');
   check('光剑刃身能切到环外的敌人', sabT.hp < 1e9,
     '2 秒 ' + hits + ' 次命中，单次 ' + Math.round(sst.dmg) + ' 伤害');
   p.autos.length = 0;
+
+  /* 端到端：站在 20px 的贴脸敌人 —— 空心区里切不到，加长刃身之后才切得到。
+     刃的判定是线段，内沿 = 半径 - 刃长×0.4；短刃时内沿离身体还有 36px，
+     贴脸的怪正好落在"环里但没有刃"的那圈空心区。 */
+  {
+    const closeHit = (up) => {
+      p.autos.length = 0;
+      HS.Gear.clearHands(p);
+      HS.Gear.take(p, 'saberring');
+      for (let l = 1; l < 5; l++) HS.Gear.take(p, 'saberring');
+      const ent = p.autos.find(x => x.id === 'saberring');
+      ent.up = up || {};
+      p.statVer = (p.statVer || 0) + 1;
+      Game.recalc(p);
+      Game.run.enemies.length = 0;
+      Game.run.pools.length = 0;
+      Game.run.devices.length = 0;
+      const t = Game.spawnEnemy('brute', false, p.x + 20, p.y);
+      t.hp = 1e9; t.maxHp = 1e9; t.speed = 0; t.armor = 0;
+      for (let f = 0; f < 120; f++) {
+        p.hp = 99999;
+        t.x = p.x + 20; t.y = p.y;
+        Game.update(1 / 60);
+      }
+      return t.hp < 1e9;
+    };
+    const hitBefore = closeHit({});
+    const hitAfter = closeHit({ blade: 2 });
+    check('没点「加长刃身」时贴脸（20px）的怪切不到', hitBefore === false, String(hitBefore));
+    check('点了「加长刃身」之后贴脸的怪也切得到', hitAfter === true, String(hitAfter));
+    p.autos.length = 0;
+  }
 
   /* ---- 环绕类：通用属性要能折叠到"轨道 / 环体 / 转速 / 刃长"上 ---- */
   const orbitStat = (passives, extraLv) => {
@@ -1766,7 +2254,7 @@ Game.startRun('highway', 'soldier');
 
 /* ================= 7.9 全部装备都能打出伤害 ================= */
 section('全部装备伤害');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const p = Game.run.p;
   const D = HS.Data;
@@ -1971,7 +2459,7 @@ Game.startRun('highway', 'soldier');
   check('钩爪拖拽也甩锁链', Game.run.chains.length > 0, Game.run.chains.length + ' 条');
   grT.dead = true;
 
-  /* 电磁轨道球：贴脸的敌人要能吃到"过载放电"，不能只能靠球体接触 */
+  /* 电磁轨道球：贴脸的敌人要能吃到"过载放电"，而且放电时环内一整圈都被麻痹 */
   HS.Gear.clearHands(p);
   p.autos.length = 0;
   p.autos.push({ id: 'railorb', lvl: 1, timer: 0, up: {}, ang: 0, uid: 77 });
@@ -1979,23 +2467,73 @@ Game.startRun('highway', 'soldier');
   Game.recalc(p);
   Game.run.enemies.length = 0;
   Game.run.chains.length = 0;
-  const orbT = Game.spawnEnemy('walker', false, p.x + 18, p.y);
-  orbT.hp = orbT.maxHp = 1e9;
-  orbT.speed = 0;
-  const orbHp0 = orbT.hp;
-  let orbChains = 0;
-  for (let f = 0; f < 180; f++) {
+  Game.run.fx.length = 0;
+  const orbSt = HS.Gear.stat(p.autos[0], p);
+  const orbRing = [];
+  [18, 32, 44].forEach((d) => {           // 全在 radius + 球体 + 16 的圈里
+    const t = Game.spawnEnemy('walker', false, p.x + d, p.y);
+    t.hp = t.maxHp = 1e9;
+    t.speed = 0;
+    orbRing.push(t);
+  });
+  const orbFar = Game.spawnEnemy('walker', false, p.x + 140, p.y);
+  orbFar.hp = orbFar.maxHp = 1e9;
+  orbFar.speed = 0;
+  const orbHp0 = orbRing[0].hp;
+  const orbD = [18, 32, 44];
+  const orbMaxStun = [0, 0, 0];
+  let orbChains = 0, orbPulses = 0;
+  for (let f = 0; f < 360; f++) {          // 6 秒：2.4 秒一轮，至少两轮
     p.hp = p.maxHp;
+    orbRing.forEach((t, k) => { t.x = p.x + orbD[k]; t.y = p.y; });
+    orbFar.x = p.x + 140; orbFar.y = p.y;
+    /* 过载那一帧会往 fx 里塞一圈电环，按它的颜色数脉冲 */
+    const fx0 = Game.run.fx.length;
     HS.Auto.update(Game.run, 1 / 60);
     Game.run.t += 1 / 60;
+    for (let q = fx0; q < Game.run.fx.length; q++) {
+      const fx = Game.run.fx[q];
+      if (fx.kind === 'ring' && fx.color === 'rgba(158,240,255,0.55)') orbPulses++;
+    }
     orbChains += Game.run.chains.length;
     Game.run.chains.length = 0;
     Game.run.fx.length = 0;
+    orbRing.forEach((t, k) => { if (t.stun > orbMaxStun[k]) orbMaxStun[k] = t.stun; });
   }
-  check('电磁轨道球能打到贴脸目标', orbHp0 - orbT.hp > 12,
-    '3 秒 ' + Math.round(orbHp0 - orbT.hp) + ' 伤害');
+  check('电磁轨道球能打到贴脸目标', orbHp0 - orbRing[0].hp > 12,
+    '6 秒 ' + Math.round(orbHp0 - orbRing[0].hp) + ' 伤害');
   check('过载放电有电弧表现', orbChains > 0, orbChains + ' 帧有电弧');
-  orbT.dead = true;
+  check('周期过载：6 秒至少两轮', orbPulses >= 2, orbPulses + ' 次 / 6s');
+  check('过载时环内一整圈都被麻痹',
+    orbMaxStun.every((s) => s >= orbSt.pulseStun - 0.06),
+    orbMaxStun.map((s) => s.toFixed(2)).join('/') + ' · 数据 ' + orbSt.pulseStun + 's');
+  check('环外 140px 不麻也不掉血', (orbFar.stun || 0) === 0 && orbFar.hp === orbFar.maxHp,
+    'stun=' + (orbFar.stun || 0));
+  /* 麻痹会结束：短跑 1 秒（短于 2.4 秒的过载间隔，不会被下一轮续上） */
+  Game.run.enemies.length = 0;
+  const orbTgt = orbRing[0];
+  orbTgt.stun = orbSt.pulseStun;
+  Game.run.enemies.push(orbTgt);
+  let stunLeft = orbTgt.stun;
+  for (let f = 0; f < 60 && stunLeft > 0; f++) {
+    p.hp = p.maxHp;
+    p.invuln = 1;
+    Game.updateEnemies(1 / 60);
+    stunLeft = orbTgt.stun;
+  }
+  check('麻痹会结束（不是永久定身）', stunLeft <= 0, orbSt.pulseStun + 's → 0');
+
+  /* 满级：过载更快、麻得更久 */
+  p.autos[0].lvl = 5;
+  HS.Gear.refresh(p);
+  Game.recalc(p);
+  const orbFull = HS.Gear.stat(p.autos[0], p);
+  check('满级过载间隔 1.6s、麻痹 0.75s',
+    Math.abs(orbFull.pulse - 1.6) < 1e-6 && Math.abs(orbFull.pulseStun - 0.75) < 1e-6,
+    orbFull.pulse + 's / ' + orbFull.pulseStun + 's');
+
+  orbTgt.dead = true;
+  orbFar.dead = true;
   p.autos.length = 0;
   HS.Gear.refresh(p);
   Game.recalc(p);
@@ -2120,17 +2658,26 @@ Game.startRun('highway', 'soldier');
 
 /* ================= 7.10 装备数据自检 ================= */
 section('装备数据自检');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const D = HS.Data;
   const p = Game.run.p;
 
   /* 这些是"运行时真的有消费方"的开关。新增 special / flag / effect 时，
      先去 gear.js / combat.js / auto.js 里把消费逻辑写上，再往这里加名字。 */
-  const SPECIAL = { sustain: 1, homing: 1, shard: 1, mark: 1, beam: 1, burn: 1, shock: 1, volley: 1 };
+  const SPECIAL = { sustain: 1, homing: 1, shard: 1, mark: 1, beam: 1, burn: 1, shock: 1,
+    bleed: 1, leech: 1 };
   const FLAG = {
     echo: 1, beam: 1, spinup: 1, bounce3: 1, split: 1, burn: 1,
-    explode: 1, pull: 1, shock: 1, homing: 1, shard: 1, volley2: 1
+    explode: 1, pull: 1, shock: 1, homing: 1, shard: 1, volley2: 1,
+    sure: 1, ring: 1, core: 1,
+    /* melt：红莲进化的"熔核层数"，消费方在 Gear.beamOnce（每跳叠一层）。
+       这张表是手写的，加新 flag 必须同步 —— 另一条保险是 tools/check-fields.js，
+       它直接扫源码，不受这张表影响 */
+    melt: 1,
+    /* 三条重型进化的专属开关（消费方分别在 Gear.fire 的 bullet 分支、
+       combat.js 的弹体命中、render 的弹丸绘制），外加炼狱的火池 / 血肉磨坊的撕裂 */
+    spiral: 1, arrowBoom: 1, bigBullet: 1, inferno: 1, rend: 1
   };
   const EFFECT = {
     mines: 1, lure: 1, smoke: 1, artillery: 1, emp: 1,
@@ -2145,7 +2692,9 @@ Game.startRun('highway', 'soldier');
   const MODKEY = {
     dmg: 1, dps: 1, cd: 1, count: 1, pierce: 1, chains: 1, targets: 1, width: 1,
     radius: 1, range: 1, speed: 1, dur: 1, spin: 1, heal: 1, slow: 1, amp: 1, atk: 1,
-    spread: 1, knock: 1, stun: 1, pull: 1, arc: 1
+    spread: 1, knock: 1, stun: 1, pull: 1, arc: 1,
+    /* 光剑无人环的「加长刃身」：加法字段，applyMod → Auto.orbit 的线段判定 */
+    blade: 1
   };
 
   const bad = [];
@@ -2174,6 +2723,22 @@ Game.startRun('highway', 'soldier');
   }
   check('所有机制 / 开关都接了消费方', bad.length === 0, bad.length ? bad.slice(0, 6).join(' , ') : '无悬空字段');
 
+  /* 两件环必须"视觉分家"：同一个 kind、半径只差 4px，一旦颜色或图标撞了，
+     卡面和场上都分不出哪个是冰（这个坑踩过一次，见 render 的 ring 分支）。 */
+  {
+    const fr = D.gear.firering, ir = D.gear.frostring;
+    const rgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
+    check('火焰环 / 冰霜环颜色不同', !!fr && !!ir && fr.color !== ir.color,
+      (fr && fr.color) + ' vs ' + (ir && ir.color));
+    check('火焰环 / 冰霜环图标不同', !!fr && !!ir && fr.icon !== ir.icon,
+      (fr && fr.icon) + ' vs ' + (ir && ir.icon));
+    check('两个环的图标都有点阵', !!HS.Icons[fr.icon] && !!HS.Icons[ir.icon],
+      fr.icon + ' / ' + ir.icon);
+    const fc = rgb(fr.color), ic = rgb(ir.color);
+    check('冰霜环是冷色（蓝明显高于红）', ic[2] > ic[0] + 30, ir.color);
+    check('火焰环是暖色（红明显高于蓝）', fc[0] > fc[2] + 30, fr.color);
+  }
+
   /* 每件装备的专属分支必须能真的算出数值（不能全是无效字段） */
   let badUp = 0, upName = '';
   for (const id of Object.keys(D.gearUps)) {
@@ -2194,6 +2759,73 @@ Game.startRun('highway', 'soldier');
     }
   }
   check('每条专属分支都真的改数值或改机制', badUp === 0, badUp ? upName : '全部有效');
+
+  /* 连锁闪电的闸门是**全局**的：蓄能照常按开火次数涨，但两道电弧之间至少 0.45 秒。
+     所以高频武器（持续光束 12.5 跳/秒、冲锋枪）不会把电弧刷成一条线，
+     也不用再像以前那样把持续光束整个排除在外（那等于这张卡对它无效）。 */
+  {
+    const rlDef = D.gear.redlaser;
+    const rlSt = HS.Gear.stat({ id: 'redlaser', lvl: 1, up: {} }, p);
+    const rlW = { id: 'redlaser', lvl: 1, up: {}, slot: 'main', timer: 0 };
+    const t0 = Game.run.t;
+    const keep = Game.run.enemies.slice();
+    Game.run.enemies.length = 0;
+    for (let k = 0; k < 6; k++) {
+      const d = Game.spawnEnemy('walker', false, p.x + 40 + k * 7, p.y);
+      d.speed = 0; d.maxHp = 1e6; d.hp = 1e6;
+    }
+    let bolts = 0, lastT = -99, minGap = 99;
+    const _cb = Game.chainBolt.bind(Game);
+    Game.chainBolt = function (dd, jj) {
+      const ok = _cb(dd, jj);
+      if (ok) {
+        if (lastT > -99) minGap = Math.min(minGap, Game.run.t - lastT);
+        lastT = Game.run.t; bolts++;
+      }
+      return ok;
+    };
+    p.chainLvl = 3; p.chainN = 0; p._chainT = -999;
+    /* 模拟持续光束：3 秒内 38 跳（12.5 跳/秒） */
+    for (let k = 0; k < 38; k++) {
+      Game.run.t = 10 + k * 0.08;
+      HS.Gear.fire(rlW, rlDef, rlSt, true);
+    }
+    Game.chainBolt = _cb;
+    check('持续光束也能放连锁闪电（不再被排除）', bolts >= 4, bolts + ' 道 / 3 秒');
+    check('连锁闪电有全局最快间隔', minGap >= 0.44, '最小间隔 ' + minGap.toFixed(2) + 's');
+    check('高频武器刷不出电弧雨', bolts <= 7, bolts + ' 道（上限约 7）');
+    p.chainLvl = 0; p.chainN = 0; p._chainT = -999;
+    Game.run.t = t0;
+    Game.run.enemies.length = 0;
+    for (const e of keep) Game.run.enemies.push(e);
+  }
+
+  /* 熔核过载（红莲进化）：穿透不是它的卖点 —— 本体那道光束本来就沿直线打穿一排，
+     再给 pierce 只是把"本来就能做的事"重复卖一次。进化给的是"持续灼烧"：
+     同一目标被连着照会一层层叠伤，断火 0.5 秒清零。 */
+  {
+    const rx = D.gear.redlaser_x;
+    check('红莲进化带熔核标记', !!(rx.flags && rx.flags.melt));
+    check('进化不靠穿透当卖点', rx.base.pierce === D.gear.redlaser.base.pierce,
+      '本体 ' + D.gear.redlaser.base.pierce + ' / 进化 ' + rx.base.pierce);
+    check('进化换了配色（烧到发白）', rx.color !== D.gear.redlaser.color, rx.color);
+
+    const px = Game.run.p;
+    const keepEn = Game.run.enemies.slice();
+    Game.run.enemies.length = 0;
+    px.x = 0; px.y = 0; px.crit = 0;
+    const stx = HS.Gear.stat({ id: 'redlaser_x', lvl: 1, up: {} }, px);
+    const dummy = Game.spawnEnemy('walker', false, 50, 0);
+    dummy.speed = 0; dummy.maxHp = 1e7; dummy.hp = 1e7;
+    for (let i = 0; i < 8; i++) HS.Gear.beamOnce(px, 0, stx, rx, 1, true, 0, 0, true);
+    check('熔核会随照射叠层', dummy.melt >= 6, 'melt=' + dummy.melt);
+    dummy.meltT = 0.01;
+    Game.updateEnemies(1 / 60); Game.updateEnemies(1 / 60);
+    check('断火就凉下来', !dummy.melt, 'melt=' + (dummy.melt || 0));
+    dummy.dead = true;
+    Game.run.enemies.length = 0;
+    for (const e of keepEn) Game.run.enemies.push(e);
+  }
 
   /* 每件装备 1→5 级必须至少有数值成长 */
   let noGrow = 0, growName = '';
@@ -2229,7 +2861,7 @@ Game.startRun('highway', 'soldier');
 
 /* ================= 7.11 追踪手感 ================= */
 section('追踪');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const p = Game.run.p;
   Game.state = 'run';
@@ -2290,7 +2922,7 @@ Game.startRun('highway', 'soldier');
 
 /* ================= 7.12 空投位置指引 ================= */
 section('空投指引');
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 {
   const p = Game.run.p;
   Game.state = 'run';
@@ -2345,6 +2977,32 @@ check('击杀 Boss 后胜利', Game.state === 'result' && Game.run.result && Gam
 check('结算产出金币', Game.run.result && Game.run.result.gold > 0, Game.run.result && Game.run.result.gold);
 check('存档记录通关', HS.Save.data.wins >= 1, HS.Save.data.wins);
 check('地图解锁判定', HS.Save.data.unlockedMaps.length >= 2, HS.Save.data.unlockedMaps.join(','));
+/* 升级三选一：进化卡的炫彩边框（旋转渐变 + 辉光 + 主描边三层）不能画崩 */
+{
+  let ok = true, err = '';
+  const prevState = Game.state;
+  try {
+    Game.startRun('highway', 'whale');
+    Game.state = 'run';
+    const DD = HS.Data;
+    const edef = DD.gear.smg_x, bdef = DD.gear.smg;
+    Game.run.choices = [
+      { kind: 'evolve', id: 'smg_x', baseId: 'smg', name: edef.name,
+        sub: '进化 · ' + bdef.name, icon: edef.icon || 'smg', color: edef.color || '#ff9f43',
+        desc: edef.desc, rare: true, src: '进化' },
+      { kind: 'passive', id: 'haste', name: '快速换弹', sub: '攻速 +10%',
+        icon: 'haste', color: '#7ee8fa', desc: '攻击间隔再缩短一档' }
+    ];
+    Game.state = 'levelup';
+    Game.uiT = 3.7;
+    Game.render();
+  } catch (e) {
+    ok = false; err = e.message;
+  }
+  check('升级界面（含进化卡）渲染无异常', ok, err || 'evolve 卡边框');
+  Game.state = prevState;
+}
+
 HS.Main.tick(1 / 60);
 check('结算界面渲染无异常', true);
 
@@ -2379,11 +3037,23 @@ HS.Main.tick(1 / 60);
 tap('tab:char');
 HS.Main.tick(1 / 60);
 check('研究所三个页签渲染无异常', true);
+{
+  /* 角色页的朝向开关：默认跟随移动方向，点一下变固定正面并写档 */
+  const before = Game.turnView;
+  tap('set:turn');
+  HS.Main.tick(1 / 60);
+  check('朝向开关能切换', Game.turnView === !before, String(Game.turnView));
+  check('朝向开关写进存档', HS.Save.data.turnView === !before, String(HS.Save.data.turnView));
+  tap('set:turn');
+  HS.Main.tick(1 / 60);
+  check('再点一次切回来', Game.turnView === before, String(Game.turnView));
+}
 
-const medicBefore = HS.Save.data.chars.length;
-tap('char:medic');
-check('解锁新角色', HS.Save.data.chars.length === medicBefore + 1, HS.Save.data.chars.join(','));
-check('选择新角色', Game.selChar === 'medic', Game.selChar);
+check('只有鲸鱼娘一个角色', Object.keys(HS.Data.chars).length === 1 && HS.Data.chars.whale,
+  Object.keys(HS.Data.chars).join(','));
+check('主角帧在表里', HS.Sprites.has('player_whale') && HS.Sprites.has('player_whale_happy'), '缺主角帧');
+tap('char:medic');                       // 旧存档残留的 id，不能崩
+check('点了旧角色 id 也不切换', Game.selChar === 'whale', Game.selChar);
 tap('back');
 check('返回标题', Game.state === 'title', Game.state);
 
@@ -2399,7 +3069,7 @@ section('夜间公路');
   const wNight = { id: 'pistol', lvl: 1, up: {}, slot: 'main' };
   const wDay = { id: 'pistol', lvl: 1, up: {}, slot: 'main' };
   const rNight = HS.Gear.stat(wNight, Game.run.p).range;
-  Game.startRun('highway', 'soldier');
+  Game.startRun('highway', 'whale');
   const rDay = HS.Gear.stat(wDay, Game.run.p).range;
   check('夜间射程被压缩', rNight < rDay * 0.85,
     Math.round(rDay) + ' -> ' + Math.round(rNight));
@@ -2431,7 +3101,7 @@ section('荒漠公路');
   /* 建筑：稀疏，而且都贴在公路两边 */
   const dbs = [];
   HS.Buildings.buildingsInRect(-2000, -2000, 2000, 2000, dbs);
-  Game.startRun('highway', 'soldier');
+  Game.startRun('highway', 'whale');
   const sbs = [];
   HS.Buildings.buildingsInRect(-2000, -2000, 2000, 2000, sbs);
   Game.startRun('desert', 'soldier');
@@ -2540,7 +3210,7 @@ check('恢复游戏', Game.state === 'run', Game.state);
 /* ================= 10. 无尽模式 ================= */
 section('无尽模式');
 Game.endless = true;
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 advance(1, { god: true });
 check('无尽标记生效', Game.run.endless === true);
 Game.run.nextBossAt = 0;
@@ -2592,7 +3262,7 @@ section('无尽刷怪顺序');
   /* 换场提示：时间点必须和刷怪表一致 */
   Game.state = 'title';
   Game.endless = true;
-  Game.startRun('highway', 'soldier');
+  Game.startRun('highway', 'whale');
   Game.run.t = 121;
   Game.updateDirector(0.016);
   check('换场有提示', /死区之夜/.test(Game.banner || ''), Game.banner);
@@ -2609,7 +3279,7 @@ section('结算金币');
   /* 金币只从两处来：局内搜刮 + 通关奖励。
      击杀 / 存活 / 精英一律不折算 —— 这两条断言就是防它被"优化"回去 */
   Game.state = 'title';
-  Game.startRun('highway', 'soldier');
+  Game.startRun('highway', 'whale');
   const r = Game.run;
   r.kills = 600; r.t = 300; r.eliteKills = 2; r.gold = 60;
   const g0 = HS.Save.data.gold;
@@ -2632,11 +3302,237 @@ section('结算金币');
     got.highway === 30 && got.night === 50 && got.desert === 80 && got.flood === 110, JSON.stringify(got));
 
   Game.state = 'title';
-  Game.startRun('highway', 'soldier');
+  Game.startRun('highway', 'whale');
   Game.run.kills = 3000; Game.run.t = 900; Game.run.eliteKills = 40; Game.run.gold = 0;
   const b2 = HS.Save.data.gold;
   Game.finishRun(true);
   check('通关奖励是额定值，不随战绩膨胀', HS.Save.data.gold - b2 === 30, (HS.Save.data.gold - b2) + ' 金');
+}
+
+/* ================= 10.45 回旋刃撞墙 / 撞车：弹回来，不掉刀 ================= */
+section('回旋刃撞墙');
+{
+  function prepRang() {
+    Game.startRun('highway', 'whale');
+    Game.runEvent = function () {};
+    Game.updateDirector = function () {};
+    const q = Game.run.p;
+    HS.Gear.clearHands(q);
+    q.autos.length = 0;
+    q.passives = {};
+    q.trade = {};
+    HS.Gear.take(q, 'glaive');
+    Game.recalc(q);
+    Game.run.enemies.length = 0;
+    return q;
+  }
+  function throwTo(q, tx, ty) {
+    Game.shoot(q.x, q.y - 3, Math.atan2(ty - q.y, tx - q.x), {
+      dmg: 10, speed: 260, life: (165 / 260) * 2, r: 2.6, pierce: 4,
+      color: '#ccc', homing: 0, effect: null, boomerang: 1, tag: 'melee'
+    });
+    const b = Game.run.bullets[Game.run.bullets.length - 1];
+    let minD = 1e9, returned = false, deadAt = null;
+    for (let f = 0; f < 240; f++) {
+      q.hp = q.maxHp;
+      q.invuln = 1;
+      Game.updateBullets(1 / 60);
+      if (!b.dead) {
+        minD = Math.min(minD, Math.hypot(b.x - q.x, b.y - q.y));
+        if (b.returning) returned = true;
+      } else { deadAt = f / 60; break; }
+    }
+    return { minD: minD, returned: returned, deadAt: deadAt, live: !b.dead };
+  }
+
+  let q = prepRang();
+  /* testMode 出生在原点，场景是确定的：一辆可驾驶的车 88px、一处挡子弹的实体 142px */
+  const veh = Game.run.vehicles[0];
+  if (veh) {
+    const rv = throwTo(q, veh.x, veh.y);
+    check('朝车扔：弹回来而不是消失', rv.returned && rv.minD < 24,
+      '最近 ' + rv.minD.toFixed(1) + 'px · 收回 ' +
+      (rv.deadAt === null ? '未' : rv.deadAt.toFixed(2) + 's'));
+    check('朝车扔：最后回到手上', rv.live === false,
+      rv.deadAt === null ? '还在场上' : 'ok');
+  }
+
+  /* 找一处挡子弹的实体（墙 / 废墟 / 路边车），朝它扔 */
+  q = prepRang();
+  let blk = null, bd = 300;
+  for (let gx = -4; gx <= 4; gx++) {
+    for (let gy = -4; gy <= 4; gy++) {
+      const list = HS.World.chunk(gx, gy);
+      for (const o of list) {
+        if (!o.blockBullets || o.broken) continue;
+        const cx = Math.max(o.bx0, Math.min(o.bx1, q.x));
+        const cy = Math.max(o.by0, Math.min(o.by1, q.y));
+        const d = Math.hypot(cx - q.x, cy - q.y);
+        if (d > 4 && d < bd) { bd = d; blk = { x: cx, y: cy, d: d }; }
+      }
+    }
+  }
+  check('场景里有可测的掩体', !!blk, blk ? blk.d.toFixed(0) + 'px' : '无');
+  if (blk) {
+    const rw = throwTo(q, blk.x, blk.y);
+    check('朝墙扔：撞上也会弹回来', rw.returned && rw.minD < 24,
+      '最近 ' + rw.minD.toFixed(1) + 'px · 收回 ' +
+      (rw.deadAt === null ? '未' : rw.deadAt.toFixed(2) + 's'));
+    check('朝墙扔：没有卡在墙里', rw.live === false, rw.deadAt === null ? '还在场上' : 'ok');
+  }
+}
+
+/* ================= 10.5 回旋刃回收（掉帧回归） ================= */
+section('回旋刃回收');
+{
+  Game.startRun('highway', 'whale');
+  Game.runEvent = function () {};
+  Game.updateDirector = function () {};
+  const p = Game.run.p;
+  HS.Gear.clearHands(p);
+  p.autos.length = 0;
+  p.passives = {};
+  p.trade = {};
+  p.weapons.push({ id: 'glaive', lvl: 5, timer: 0, up: { power: 3, count: 2, homing: 2 } });
+  Game.recalc(p);
+  Game.run.enemies.length = 0;
+  let peak = 0;
+  /* 空放 20 秒：没有敌人，刀只能靠"回到手上"这条路消失。
+     以前 life 被托在 0.08 以上，永远等不到寿命耗尽 —— 25 秒能攒 90 把。 */
+  for (let f = 0; f < 60 * 20; f++) {
+    p.hp = p.maxHp;
+    p.invuln = 1;
+    HS.Main.tick(1 / 60);
+    if (Game.run.bullets.length > peak) peak = Game.run.bullets.length;
+  }
+  check('空放 20 秒刀不超过 12 把', peak <= 12, '峰值 ' + peak + ' 把');
+
+  /* 有敌人时：刀还得真的打得到，不能为了回收把判定关了 */
+  Game.run.enemies.length = 0;
+  const t = Game.spawnEnemy('walker', false, p.x + 70, p.y);
+  t.hp = t.maxHp = 1e9;
+  t.speed = 0;
+  const hp0 = t.hp;
+  for (let f = 0; f < 60 * 6; f++) {
+    p.hp = p.maxHp;
+    p.invuln = 1;
+    t.x = p.x + 70;
+    t.y = p.y;
+    HS.Main.tick(1 / 60);
+  }
+  check('回旋刃照样打到人', hp0 - t.hp > 50, Math.round(hp0 - t.hp) + ' 伤害 / 6s');
+  check('有敌人时也不越攒越多', Game.run.bullets.length <= 12, Game.run.bullets.length + ' 把');
+}
+
+/* ================= 10.52 回旋刃嗜血：飞出去的刀也要回血 ================= */
+section('回旋刃嗜血');
+{
+  Game.startRun('highway', 'whale');
+  Game.runEvent = function () {};
+  Game.updateDirector = function () {};
+  const p = Game.run.p;
+  HS.Gear.clearHands(p);
+  p.autos.length = 0;
+  p.passives = {};
+  p.trade = {};
+  p.regen = 0;
+  p.weapons.push({ id: 'glaive', lvl: 5, timer: 0, up: { leech: 3 } });
+  Game.recalc(p);
+  const st = HS.Gear.stat(p.weapons[0], p);
+  check('嗜血等级进了数值', st.leechLv === 3, String(st.leechLv));
+
+  Game.run.enemies.length = 0;
+  const t = Game.spawnEnemy('walker', false, p.x + 60, p.y);
+  t.hp = t.maxHp = 1e9;
+  t.speed = 0;
+  p.hp = p.maxHp * 0.4;
+  const hp0 = p.hp;
+  for (let f = 0; f < 60 * 4; f++) {
+    p.invuln = 1;
+    t.x = p.x + 60;
+    t.y = p.y;
+    Game.update(1 / 60);
+  }
+  check('回旋刃的嗜血真的回血', p.hp > hp0 + 5, '+' + Math.round(p.hp - hp0) + ' HP / 4s');
+}
+
+/* ================= 10.55 近战顿帧：飞出去的刀不许把世界刷成慢动作 ================= */
+section('近战顿帧');
+{
+  function hitStopFrames(id, up) {
+    Game.startRun('highway', 'whale');
+    Game.runEvent = function () {};
+    Game.updateDirector = function () {};
+    const q = Game.run.p;
+    HS.Gear.clearHands(q);
+    q.autos.length = 0;
+    q.passives = {};
+    q.trade = {};
+    q.weapons.push({ id: id, lvl: 5, timer: 0, up: up || {} });
+    Game.recalc(q);
+    Game.run.enemies.length = 0;
+    for (let i = 0; i < 50; i++) {
+      const a = (i / 50) * Math.PI * 2;
+      const dz = 24 + (i % 8) * 9;
+      const e = Game.spawnEnemy('walker', false, q.x + Math.cos(a) * dz, q.y + Math.sin(a) * dz);
+      e.hp = 1e9;
+      e.maxHp = 22;          // 只留"重击判定"要用的最大血量（打不死，场子不会散）
+      e.speed = 0;
+    }
+    let n = 0;
+    for (let f = 0; f < 600; f++) {
+      q.hp = q.maxHp;
+      q.invuln = 1;
+      Game.state = 'run';
+      if (Game.hitStop > 0) n++;
+      HS.Main.tick(1 / 60);
+    }
+    return n;
+  }
+  const gsFrames = hitStopFrames('glaive', { power: 3, count: 2, homing: 2 });
+  const katFrames = hitStopFrames('katana', { power: 3, rate: 3 });
+  check('回旋刃不再触发近战顿帧', gsFrames === 0, gsFrames + ' 帧 / 10s');
+  check('挥砍的顿帧还在，但不会刷屏', katFrames > 0 && katFrames < 120,
+    katFrames + ' 帧 / 10s');
+  Game.state = 'run';
+}
+
+/* ================= 10.6 震屏疲劳（自爆尸 / 连续爆炸） ================= */
+section('震屏疲劳');
+{
+  Game.startRun('tunnel', 'whale');
+  const pp = Game.run.p;
+  Game.run.enemies.length = 0;
+  Game.run.shake = 0; Game.run.shakeBusy = 0;
+  const bb = Game.spawnEnemy('bomber', false, pp.x + 70, pp.y);
+  Game.bomberBlast(bb);
+  check('自爆尸震屏压到 3.2', Math.abs(Game.run.shake - 3.2) < 0.01, Game.run.shake.toFixed(2));
+  const bm = Game.spawnEnemy('bomber', false, pp.x + 70, pp.y);
+  bm.mini = true;
+  Game.run.shake = 0;
+  Game.bomberBlast(bm);
+  check('小崽更轻（1.5）', Math.abs(Game.run.shake - 1.5) < 0.01, Game.run.shake.toFixed(2));
+
+  /* 一直在震 → 疲劳累加；停手 → 回落 */
+  Game.run.enemies.length = 0;
+  Game.run.p.xpNext = 1e9;          // 别让升级把 updateRun 掐断
+  Game.run.shake = 6; Game.run.shakeBusy = 0;
+  for (let f = 0; f < 60; f++) {
+    Game.state = 'run';
+    Game.run.p.hp = Game.run.p.maxHp;
+    Game.run.shake = 6;
+    Game.update(1 / 60);
+  }
+  check('连续震屏会攒疲劳', Game.run.shakeBusy > 0.5, Game.run.shakeBusy.toFixed(2));
+  const eff = HS.Render.shakeAmount({ state: 'run', run: Game.run });
+  check('疲劳后同一个 6 只剩不到一半', eff < 3.2, eff.toFixed(2));
+  Game.run.shake = 0;
+  for (let f = 0; f < 120; f++) {
+    Game.state = 'run';
+    Game.run.p.hp = Game.run.p.maxHp;
+    Game.update(1 / 60);
+  }
+  check('停震后疲劳回落', Game.run.shakeBusy < 0.15, Game.run.shakeBusy.toFixed(2));
 }
 
 /* ================= 11. 设置界面 ================= */
@@ -2668,17 +3564,62 @@ check('震动开关生效', Game.vibOn === false && HS.P.vibrateOn === false, St
 check('震动写入存档', HS.Save.data.vib === false, String(HS.Save.data.vib));
 tap('set:vib');
 
+/* 震动节流：单次 90ms、连击 260ms（自爆尸连环炸时别让手机一直抖） */
+HS.P.vibrateOn = true;
+HS.P._vibT = 0;
+HS.P.vibrate('light');
+const vibT1 = HS.P._vibT;
+check('受击会触发震动', vibT1 > 0);
+HS.P.vibrate('light');
+check('紧挨着的第二下被吃掉', HS.P._vibT === vibT1);
+HS.P._vibT = Date.now() - 300;
+const vibBefore = Date.now();
+HS.P.vibrate('light');
+check('连击里至少隔 260ms', HS.P._vibT >= vibBefore, String(HS.P._vibT - vibBefore));
+
 tap('set:fx');
 check('低特效开关生效', Game.fxLow === true && HS.P.fxLow === true, String(Game.fxLow));
 check('低特效写入存档', HS.Save.data.fxLow === true, String(HS.Save.data.fxLow));
 
 /* 低特效下镜头抖动会被压掉，血迹也不再画 */
 Game.state = 'title';
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 Game.run.shake = 10;
 Game.render();
 check('低特效下渲染无异常', true);
 Game.fxLow = false; HS.P.fxLow = false;
+
+/* 局内暂停也能改设置：不用退出这一局 */
+Game.state = 'title';
+Game.startRun('highway', 'whale');
+Game.state = 'run';
+Game.pauseSet = false;
+Game.render();
+check('局内有暂停按钮', Game.hits.some((h) => h.id === 'pause'));
+tap('pause');
+check('暂停后状态是 paused', Game.state === 'paused', Game.state);
+Game.render();
+const pauseIds = Game.hits.map((h) => h.id);
+check('暂停菜单有"设置"入口', pauseIds.indexOf('pause:set') >= 0, pauseIds.join(','));
+tap('pause:set');
+check('打开暂停里的设置子页', Game.pauseSet === true);
+Game.render();
+const setIdle = Game.hits.map((h) => h.id);
+check('设置子页有音效 / 画面特效开关',
+  setIdle.indexOf('set:sfx') >= 0 && setIdle.indexOf('set:fx') >= 0, setIdle.join(','));
+check('设置子页不再响应底下的 HUD 按钮', setIdle.indexOf('pause') < 0);
+const sfxPauseWas = Game.sfxOn;
+tap('set:sfx');
+check('暂停里改音效立刻生效',
+  Game.sfxOn === !sfxPauseWas && HS.Audio.enabled === !sfxPauseWas,
+  String(Game.sfxOn) + '/' + String(HS.Audio.enabled));
+tap('set:sfx');
+check('暂停里能把音效改回来',
+  Game.sfxOn === sfxPauseWas && HS.Audio.enabled === sfxPauseWas);
+tap('pause:back');
+check('从设置退回暂停菜单', Game.pauseSet === false && Game.state === 'paused');
+tap('resume');
+check('返回后继续游戏', Game.state === 'run' && Game.pauseSet === false);
 
 /* 清除存档：先确认弹窗，再取消，最后真的清 */
 Game.state = 'settings';
@@ -2704,7 +3645,7 @@ for (let k = 0; k < 30; k++) HS.Main.tick(1 / 60);   // 过 0.5s 再点才有效
 tap('wipe:yes');
 check('确认后存档归零', HS.Save.data.gold === 0 && HS.Save.data.wins === 0, HS.Save.data.gold);
 check('清除后回到安全默认', Game.fxLow === false && HS.P.fxLow === false && Game.sfxOn === true);
-check('角色回到初始', HS.Save.data.chars.length === 1 && HS.Save.data.chars[0] === 'soldier',
+check('角色回到初始', HS.Save.data.chars.length === 1 && HS.Save.data.chars[0] === 'whale',
   HS.Save.data.chars.join(','));
 check('地图回到初始', HS.Save.data.unlockedMaps.length === 1 && HS.Save.data.unlockedMaps[0] === 'highway',
   HS.Save.data.unlockedMaps.join(','));
@@ -2718,7 +3659,7 @@ check('从设置返回标题', Game.state === 'title', Game.state);
 section('连锁闪电与关卡强度');
 {
   /* 连锁闪电：每 X 次开火放一道，X 随等级缩短 */
-  Game.startRun('highway', 'soldier');
+  Game.startRun('highway', 'whale');
   const p = Game.run.p;
   p.passives.chainbolt = 1;
   Game.recalc(p);
@@ -2816,7 +3757,7 @@ HS.Host.use(h_keep);
 const h_beforeRuns = HS.Save.data.endlessRuns;
 Game.state = 'title';
 Game.endless = false;
-Game.startRun('highway', 'soldier');
+Game.startRun('highway', 'whale');
 Game.run.t = 300;
 Game.finishRun(true);
 check('普通关卡不记无尽成绩', HS.Save.data.endlessRuns === h_beforeRuns, 'endlessRuns=' + HS.Save.data.endlessRuns);

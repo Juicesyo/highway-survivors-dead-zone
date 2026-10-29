@@ -324,56 +324,56 @@
 
   function makeRoof(b) {
     b.roofVents = [];
-    var count = (b.kind === 'tower' ? 2 : 1) + ((U.hash(b.seed, 12, 1212) * 2) | 0);
-    for (var i = 0; i < count; i++) {
-      var w = 10 + ((U.hash(b.seed, 13 + i, 1313) * 8) | 0);
-      var h = 7 + ((U.hash(b.seed, 15 + i, 1515) * 6) | 0);
-      var x = b.x0 + 8 + U.hash(b.seed, 17 + i, 1717) * (b.w - 16 - w);
-      var y = b.y0 + 8 + U.hash(b.seed, 19 + i, 1919) * (b.h - 16 - h);
-      if (i === 0) {
-        /* 第一个通风口避开楼梯口正上方 */
-        if (b.stairs) { x = b.x0 + b.w * 0.7; y = b.y0 + b.h * 0.28; }
-      }
-      b.roofVents.push({ x: x, y: y, w: w, h: h, x0: x, y0: y, x1: x + w, y1: y + h, seed: (b.seed + i * 71) | 0 });
-    }
+    b._roofNav = null;
+    /* 风口离女儿墙（INSET）至少留 KEEP 的净空，这是「上下楼不掉坑」的前提：
+       以前风口可以贴着女儿墙放，两块风口一并就把楼顶切成两个互不连通的区域，
+       站在被切出去那半边的丧尸永远走不到楼梯 —— 也就是玩家看到的
+       「能上楼、却下不来」。留出这条通道之后，绕行流场才总是有解。 */
+    var KEEP = 14;
+    var lo0X = b.x0 + INSET + KEEP, hi0X = b.x1 - INSET - KEEP;
+    var lo0Y = b.y0 + INSET + KEEP, hi0Y = b.y1 - INSET - KEEP;
 
-    /* 烟囱 / 水塔：屋顶上的地标，也是实心掩体。让屋顶一眼看去不是地板。 */
-    function freeRoofSpot(w, h) {
-      for (var t = 0; t < 10; t++) {
-        var xx = b.x0 + 7 + U.hash(b.seed, 41 + t, 4141) * Math.max(1, b.w - 14 - w);
-        var yy = b.y0 + 7 + U.hash(b.seed, 43 + t, 4343) * Math.max(1, b.h - 14 - h);
-        if (b.stairs && rectOverlap(xx - 4, yy - 4, xx + w + 4, yy + h + 4,
+    /* 放一块屋顶构件：夹进可用区 → 躲开楼梯 → 躲开已有构件，退让 8 次仍不行就放弃 */
+    function placeVent(w, h, hashA, hashB, extra) {
+      var loX = lo0X, hiX = hi0X - w;
+      var loY = lo0Y, hiY = hi0Y - h;
+      if (hiX < loX) { loX = (b.x0 + b.x1) * 0.5 - w * 0.5; hiX = loX; }
+      if (hiY < loY) { loY = (b.y0 + b.y1) * 0.5 - h * 0.5; hiY = loY; }
+      for (var t = 0; t < 8; t++) {
+        var x = Math.round(loX + (hiX > loX ? U.hash(b.seed, hashA + t, 1717 + t) * (hiX - loX) : 0));
+        var y = Math.round(loY + (hiY > loY ? U.hash(b.seed, hashB + t, 1919 + t) * (hiY - loY) : 0));
+        /* 楼梯口必须留干净：压住楼梯就没有"可落脚的下楼点"了 */
+        if (b.stairs && rectOverlap(x - 7, y - 7, x + w + 7, y + h + 7,
           b.stairs.x0, b.stairs.y0, b.stairs.x1, b.stairs.y1)) continue;
         var clash = false;
         for (var v = 0; v < b.roofVents.length; v++) {
           var vv = b.roofVents[v];
-          if (rectOverlap(xx - 4, yy - 4, xx + w + 4, yy + h + 4, vv.x0, vv.y0, vv.x1, vv.y1)) {
+          if (rectOverlap(x - 5, y - 5, x + w + 5, y + h + 5, vv.x0, vv.y0, vv.x1, vv.y1)) {
             clash = true; break;
           }
         }
-        if (!clash) return { x: xx, y: yy };
+        if (clash) continue;
+        var vent = { x: x, y: y, w: w, h: h, x0: x, y0: y, x1: x + w, y1: y + h, seed: (b.seed + hashA * 71) | 0 };
+        if (extra) for (var k in extra) if (extra.hasOwnProperty(k)) vent[k] = extra[k];
+        vent.x = x + w * 0.5; vent.y = y + h * 0.5;
+        b.roofVents.push(vent);
+        return vent;
       }
       return null;
     }
 
+    var count = (b.kind === 'tower' ? 2 : 1) + ((U.hash(b.seed, 12, 1212) * 2) | 0);
+    for (var i = 0; i < count; i++) {
+      var w = 10 + ((U.hash(b.seed, 13 + i, 1313) * 8) | 0);
+      var h = 7 + ((U.hash(b.seed, 15 + i, 1515) * 6) | 0);
+      placeVent(w, h, 17 + i, 19 + i, null);
+    }
+
+    /* 烟囱 / 水塔：屋顶上的地标，也是实心掩体。让屋顶一眼看去不是地板。 */
     if (b.kind === 'house' && U.hash(b.seed, 27, 2727) < 0.78) {
-      var ch = freeRoofSpot(9, 9);
-      if (ch) {
-        b.roofVents.push({
-          isChimney: true, x: ch.x + 4.5, y: ch.y + 4.5, w: 9, h: 9,
-          x0: ch.x, y0: ch.y, x1: ch.x + 9, y1: ch.y + 9,
-          seed: (b.seed + 271) | 0
-        });
-      }
+      placeVent(9, 9, 41, 43, { isChimney: true });
     } else if (b.kind === 'tower' && U.hash(b.seed, 29, 2929) < 0.62) {
-      var tk = freeRoofSpot(16, 15);
-      if (tk) {
-        b.roofVents.push({
-          isTank: true, x: tk.x + 8, y: tk.y + 7.5, w: 16, h: 15,
-          x0: tk.x, y0: tk.y, x1: tk.x + 16, y1: tk.y + 15,
-          seed: (b.seed + 291) | 0
-        });
-      }
+      placeVent(16, 15, 45, 47, { isTank: true });
     }
 
     if (b.roofAccess && U.hash(b.seed, 21, 2121) < 0.82) {
@@ -518,6 +518,7 @@
     b.stairs = null;
     b.roofVents = [];
     b.roofCrate = null;
+    b._roofNav = null;
     b.reveal = 0;
   }
 
@@ -536,6 +537,8 @@
     var desert = (theme === 'desert');
     /* 锈水高速是裸露立交，安全屋由局内事件临时开放，不生成城市楼群。 */
     if (theme === 'flood') return out;
+    /* 公路隧道两边是山体衬砌，没有一栋楼 —— 也不该有门洞把墙破开 */
+    if (theme === 'tunnel') return out;
     /* 建筑必须完整落在自己的区块里：碰撞查询是按区块取缓存的，
        一旦楼跨到隔壁区块，玩家就能从墙角穿过去 */
     var minX = bx + 4, maxX = bx + BLOCK - 4;
@@ -827,10 +830,146 @@
     return d <= maxDist ? b : null;
   }
 
-  /** 站在楼顶、靠近楼梯口：可以原路下楼，楼顶不是单向陷阱 */
+  /**
+   * 站在楼顶、靠近楼梯口：可以原路下楼，楼顶不是单向陷阱 */
   function nearRoofHatch(x, y, b, maxDist) {
     if (!b || !b.stairs) return null;
     return U.dist(x, y, b.stairs.x, b.stairs.y) <= maxDist ? b : null;
+  }
+
+  /**
+   * 楼顶导航流场：楼顶是**静态**的（女儿墙 + 风口 + 楼梯，生成后不再变），
+   * 所以建一次就够，不用每帧试错。
+   *
+   * 为什么不能用"朝楼梯直线走"：楼顶没有地面那套网格寻路，丧尸一旦被风口
+   * 挡在直线上就会顶着风口原地磨，玩家看到的现象就是「上得去、下不来」。
+   * 这里用 6px 粗格 + 从楼梯格做一次 BFS，每格记下"朝楼梯的下一格"，
+   * 运行时只查表 —— 天然绕开风口，也不会在两个角之间来回抖。
+   */
+  var ROOF_CELL = 6;
+  function roofNav(b) {
+    if (b._roofNav) return b._roofNav;
+    var C = ROOF_CELL;
+    var minX = b.x0 + INSET, minY = b.y0 + INSET;
+    var w = Math.max(1, Math.ceil((b.x1 - INSET - minX) / C));
+    var h = Math.max(1, Math.ceil((b.y1 - INSET - minY) / C));
+    var n = w * h, xx, yy, v, i;
+    var blocked = new Uint8Array(n);
+    /* 风口按"丧尸半径 5 + 1 余量"膨胀，避免擦着边卡住 */
+    var pad = 6;
+    for (i = 0; i < b.roofVents.length; i++) {
+      v = b.roofVents[i];
+      var cx0 = Math.max(0, Math.floor((v.x0 - pad - minX) / C));
+      var cx1 = Math.min(w - 1, Math.floor((v.x1 + pad - minX) / C));
+      var cy0 = Math.max(0, Math.floor((v.y0 - pad - minY) / C));
+      var cy1 = Math.min(h - 1, Math.floor((v.y1 + pad - minY) / C));
+      for (yy = cy0; yy <= cy1; yy++) {
+        for (xx = cx0; xx <= cx1; xx++) blocked[yy * w + xx] = 1;
+      }
+    }
+    /* 楼梯所在的格子无论如何都可走（风口本来就避开了楼梯，这里只作兜底） */
+    var sx = Math.floor((b.stairs.x - minX) / C);
+    var sy = Math.floor((b.stairs.y - minY) / C);
+    if (sx < 0) sx = 0; else if (sx > w - 1) sx = w - 1;
+    if (sy < 0) sy = 0; else if (sy > h - 1) sy = h - 1;
+    var start = sy * w + sx;
+    blocked[start] = 0;
+
+    /* BFS：next[i] = 从 i 往楼梯走应当踏入的下一格（-1 = 走不到） */
+    var next = new Int32Array(n);
+    for (i = 0; i < n; i++) next[i] = -1;
+    next[start] = start;
+    var q = [start], qi, cur, cx, cy, nx, ny, ni;
+    for (qi = 0; qi < q.length; qi++) {
+      cur = q[qi];
+      cx = cur % w;
+      cy = (cur / w) | 0;
+      for (var d = 0; d < 4; d++) {
+        nx = cx + (d === 0 ? -1 : (d === 1 ? 1 : 0));
+        ny = cy + (d === 2 ? -1 : (d === 3 ? 1 : 0));
+        if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue;
+        ni = ny * w + nx;
+        if (blocked[ni] || next[ni] >= 0) continue;
+        next[ni] = cur;
+        q.push(ni);
+      }
+    }
+    b._roofNav = {
+      c: C, minX: minX, minY: minY, w: w, h: h,
+      next: next, blocked: blocked, start: start
+    };
+    return b._roofNav;
+  }
+
+  /**
+   * 楼顶行走的临时目标（给丧尸下楼用）。
+   * 直线到楼梯没被挡就直接走直线（避免 6px 格子的锯齿感）；
+   * 被风口挡住、或者自己已经被挤进风口里，才查流场。
+   */
+  function roofStep(ent, b) {
+    var s = b && b.stairs;
+    if (!s) return null;
+    var r = (ent.r || 5) + 1;
+    if (ent.x >= s.x0 && ent.x <= s.x1 && ent.y >= s.y0 && ent.y <= s.y1) {
+      return { x: s.x, y: s.y };
+    }
+    var inVent = false, clear = true;
+    for (var i = 0; i < b.roofVents.length; i++) {
+      var v = b.roofVents[i];
+      /* 起点就在膨胀区里时 segRect 会返回"没穿过"（线段起点在矩形内），
+         所以要单独判一次，否则会一直以为直线是通的、然后被风口顶回来 */
+      if (circleRect(ent.x, ent.y, r, v.x0, v.y0, v.x1, v.y1)) inVent = true;
+      if (segRect(ent.x, ent.y, s.x, s.y, v.x0 - r, v.y0 - r, v.x1 + r, v.y1 + r)) {
+        clear = false;
+        break;
+      }
+    }
+    if (clear && !inVent) return { x: s.x, y: s.y };
+
+    var nav = roofNav(b);
+    var C = nav.c;
+    var cx = Math.floor((ent.x - nav.minX) / C);
+    var cy = Math.floor((ent.y - nav.minY) / C);
+    if (cx < 0) cx = 0; else if (cx > nav.w - 1) cx = nav.w - 1;
+    if (cy < 0) cy = 0; else if (cy > nav.h - 1) cy = nav.h - 1;
+    var idx = cy * nav.w + cx;
+    if (!nav.blocked[idx]) {
+      var nx = nav.next[idx];
+      if (nx < 0 || nx === idx) return { x: s.x, y: s.y };
+      return {
+        x: nav.minX + (nx % nav.w + 0.5) * C,
+        y: nav.minY + (((nx / nav.w) | 0) + 0.5) * C
+      };
+    }
+    /* 自己在风口里：找最近一格可走、且流场能走到的格，先脱离。
+       搜索半径放到 4 格（24px）——两块风口贴在一起时会形成一条 30px 宽的
+       "墙"，被挤在墙中间的丧尸得先往外退一截才绕得过去 */
+    var best = null, bd = 1e9, dx, dy, tcx, tcy, ti;
+    for (dy = -4; dy <= 4; dy++) {
+      for (dx = -4; dx <= 4; dx++) {
+        if (!dx && !dy) continue;
+        tcx = cx + dx; tcy = cy + dy;
+        if (tcx < 0 || tcx >= nav.w || tcy < 0 || tcy >= nav.h) continue;
+        ti = tcy * nav.w + tcx;
+        if (nav.blocked[ti] || nav.next[ti] < 0) continue;
+        var cost = dx * dx + dy * dy;
+        if (cost < bd) { bd = cost; best = ti; }
+      }
+    }
+    if (best === null) return { x: s.x, y: s.y };
+    return {
+      x: nav.minX + (best % nav.w + 0.5) * C,
+      y: nav.minY + (((best / nav.w) | 0) + 0.5) * C
+    };
+  }
+
+  /** 到楼梯"矩形"的距离（站在楼梯边上就算 0，别只认中心点） */
+  function stairsDist(x, y, b) {
+    var s = b && b.stairs;
+    if (!s) return 1e9;
+    var nx = x < s.x0 ? s.x0 : (x > s.x1 ? s.x1 : x);
+    var ny = y < s.y0 ? s.y0 : (y > s.y1 ? s.y1 : y);
+    return U.dist(x, y, nx, ny);
   }
 
   function edgeDir(x, y, b, margin) {
@@ -1186,6 +1325,9 @@
     doorBlocked: doorBlocked,
     nearStairs: nearStairs,
     nearRoofHatch: nearRoofHatch,
+    stairsDist: stairsDist,
+    roofStep: roofStep,
+    roofNav: roofNav,
     edgeDir: edgeDir,
     interiorLootNear: interiorLootNear,
     roofLootNear: roofLootNear,

@@ -1,11 +1,12 @@
 {
   "name": "highway-survivors-dead-zone",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
   "description": "像素肉鸽打僵尸微信小游戏 —— Highway Survivors: Dead Zone",
   "scripts": {
     "test": "node tools/smoke.js",
     "test:flood": "node tools/check-flood.js",
+    "test:sfx": "node tools/check-fire-sfx.js",
     "balance": "node tools/balance.js 6",
     "build": "node tools/build-sprites.js && node tools/build-browser.js",
     "sprites": "node tools/build-sprites.js"

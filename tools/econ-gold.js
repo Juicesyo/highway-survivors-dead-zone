@@ -23,7 +23,7 @@ const buf = [];
 
 for (const mid of ['highway', 'night', 'desert', 'flood']) {
   G.state = 'title';
-  G.startRun(mid, 'soldier');
+  G.startRun(mid, 'whale');
 
   /* 扫一圈 14x14 个区块（约 2700x2700 世界像素） */
   let n = 0, sum = 0, seen = 0;

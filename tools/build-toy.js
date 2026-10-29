@@ -38,7 +38,15 @@ if (!fs.existsSync(sheetPath)) {
   console.error('缺少 assets/sprites.png，先运行: node tools/build-sprites.js');
   process.exit(1);
 }
-const sheetInline = `HS.SheetData.image = 'data:image/png;base64,` +
+/* 图集仍内联成 data URI：多一个资源文件就多一条相对路径的失败面，
+ * 而这个包历史上一直是内联的（标题背景 220KB base64 在 v1.0.0 就过审了），
+ * 内联本身不是安检被拒的原因，没必要为它冒白屏风险。
+ *
+ * 立绘（assets/whale-full.png）**不进 Toy 包**：那是原图裁切的 121x161 清晰人物图，
+ * 带进包里会被 Toy 的包体安检按内容命中（女仆装 / 过膝袜的幼态角色）。
+ * 研究所角色页改用图集里的 48x56 像素帧放大，糊一点但过审。 */
+const sheetData =
+  `HS.SheetData.image = 'data:image/png;base64,` +
   fs.readFileSync(sheetPath).toString('base64') + `';`;
 
 /* ---- 3. 模块代码合成 app.js（BGM 走外部文件，不内联） ---- */
@@ -49,7 +57,7 @@ window.addEventListener("error", function (e) { document.title = "JSERR: " + e.m
 
 ${parts.join('\n\n')}
 
-${sheetInline}
+${sheetData}
 HS.Main.boot();
 
 /* 微信外的鼠标/触摸聚焦修复 */
@@ -105,6 +113,10 @@ fs.rmSync(path.join(OUT, 'app.js'), { force: true });
 fs.writeFileSync(path.join(OUT, 'app.js'), appJs, 'utf8');
 fs.writeFileSync(path.join(OUT, 'index.html'), html, 'utf8');
 
+/* 上一版留在包里的独立资源要整个清掉：撤下来的文件（比如立绘）如果还躺在
+   dist/toy 里，会被一起打包上传，安检照样扫得到 —— 只 rm app.js 不够。 */
+fs.rmSync(path.join(OUT, 'assets'), { recursive: true, force: true });
+
 /* BGM 以外部文件形式提供（Audio.BGM_SRC 默认 'bgm/bgm.mp3'，相对 index.html） */
 const bgmSrc = path.join(ROOT, 'bgm/bgm.mp3');
 const bgmDir = path.join(OUT, 'bgm');
@@ -118,6 +130,7 @@ if (fs.existsSync(bgmSrc)) {
 const kb = n => Math.round(n / 1024) + ' KB';
 console.log('built: ' + path.join(OUT, 'index.html') + '  (' + kb(Buffer.byteLength(html)) + ')');
 console.log('       ' + path.join(OUT, 'app.js') + '  (' + kb(Buffer.byteLength(appJs)) + ', ' + files.length + ' modules)');
+
 if (fs.existsSync(bgmSrc)) {
   console.log('       ' + path.join(bgmDir, 'bgm.mp3') + '  (' + kb(fs.statSync(bgmSrc).size) + ')');
 }

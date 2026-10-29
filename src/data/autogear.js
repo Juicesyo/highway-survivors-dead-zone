@@ -85,12 +85,15 @@
     {
       /* 电磁球的问题一直是"球是点、接触靠运气"：转速慢、判定半径只有 6px，
          敌人从环上走过去常常整个错过，Lv3 的实测 DPS 和 Lv1 几乎一样。
-         现在给它球体判定（ball）+ 周期过载放电（pulse），接触打不到的由电弧补上。 */
-      id: 'railorb', name: '电磁轨道球', rarity: 3, color: '#9ef0ff', desc: '高压电球环绕，周期过载放电',
-      base: { count: 1, radius: 30, dmg: 13, spin: 2.6, chains: 2, ball: 4, pulse: 2.4, pulseMax: 4 },
+         现在给它球体判定（ball）+ 周期过载放电（pulse），接触打不到的由电弧补上。
+         过载放电同时**麻痹环内一整圈**（pulseStun）——
+         以前只有挨到电弧的那 4 个掉血，旁边站着的照常往前挤，看着不像"发电"。 */
+      id: 'railorb', name: '电磁轨道球', rarity: 3, color: '#9ef0ff', desc: '高压电球环绕，过载放电电麻环内一圈',
+      base: { count: 1, radius: 30, dmg: 13, spin: 2.6, chains: 2, ball: 4, pulse: 2.4, pulseMax: 4, pulseStun: 0.55 },
       g: { dmg: 0.2, radius: 1.4, ball: 0.25 },
-      /* 满级裂成两颗，电弧跳到 3 个目标，过载从 4 个目标扩到 6 个、间隔缩到 1.6 秒 */
-      full: { count: 2, chains: 3, radius: 1.1, dmg: 1.2, ball: 7, pulse: 1.6, pulseMax: 6 }
+      /* 满级裂成两颗，电弧跳到 3 个目标，过载从 4 个目标扩到 6 个、间隔缩到 1.6 秒，
+         麻痹也拉长到 0.75 秒（1.6 秒一轮 → 接近一半时间按着贴脸的怪） */
+      full: { count: 2, chains: 3, radius: 1.1, dmg: 1.2, ball: 7, pulse: 1.6, pulseMax: 6, pulseStun: 0.75 }
     },
     {
       /* 光剑：判定是"线段"不是"一个点" —— blade 是刃长（px），
@@ -122,11 +125,15 @@
   add('环绕型', { kind: 'ring', color: '#ff8b3d', rarity: 2, icon: 'firering' }, [
     {
       id: 'firering', name: '火焰环', rarity: 3, desc: '一圈持续燃烧的火墙，谁进来烧谁', tags: ['fire'],
+      color: '#ff8b3d', icon: 'firering',
       base: { radius: 42, dps: 9, dmg: 4, width: 7 },
       g: { dps: 0.16, radius: 1.4 }
     },
     {
+      /* 冰霜环在分组里继承的是火焰环的橙色和图标 —— 两件环在卡面和场上长得一模一样，
+         只能靠名字认。这里给它单独的冷蓝 + 冰晶图标，脚下的环也跟着变蓝（见 render 的 ring 分支）。 */
       id: 'frostring', name: '冰霜环', rarity: 3, desc: '冰冷环带减速并冻伤，配暴击非常凶', tags: ['ice'],
+      color: '#6fc8ff', icon: 'icerim',
       base: { radius: 46, dps: 5, dmg: 3, slow: 0.35, width: 7 },
       g: { dps: 0.16, radius: 1.3, slow: 0.03 }
     }

@@ -117,6 +117,30 @@ function simBurst(dur, vol, f0, f1) {
   return filtered;
 }
 
+/* 常驻声部（红莲 / 熔核的持续嗡鸣）：没有包络，量的是稳态电平 */
+function simPad(freq, type, vol, dur) {
+  const n = Math.ceil(SR * dur);
+  const out = new Float64Array(n);
+  let ph = 0;
+  for (let i = 0; i < n; i++) { ph = (ph + freq / SR) % 1; out[i] = wave(type, ph) * vol; }
+  return out;
+}
+
+function simHissSteady(vol, f0, Q, dur) {
+  const n = Math.ceil(SR * dur);
+  const raw = new Float64Array(n);
+  const w = white();
+  for (let i = 0; i < n; i++) raw[i] = w[i % w.length];
+  const f = runBiquad(raw, 'bandpass', Q, () => f0);
+  for (let i = 0; i < n; i++) f[i] *= vol;
+  return f;
+}
+
+/* 锯齿先过一道低通再进总线（audio.js 的 beam 里有同一只 lp） */
+function simPadLP(freq, type, vol, dur, fc) {
+  return runBiquad(simPad(freq, type, vol, dur), 'lowpass', 0.4, () => fc);
+}
+
 /** 多层混合（相位视为随机，采样的平方和叠加） */
 function mixRMSAndPeak(layers, master) {
   let peak = 0, sum = 0, len = 0;
@@ -140,7 +164,7 @@ const MASTER = masterM ? parseFloat(masterM[1]) : 1;
 
 const sfxBlock = src.slice(src.indexOf('var SFX = {'), src.indexOf('var ART_SFX'));
 const SFX = {};
-const re = /(\w+):\s*\{\s*(?:n:\s*\[([^\]]+)\])?[,\s]*(?:t:\s*\[([^\]]+)\])?\s*\}/g;
+const re = /(\w+):\s*\{\s*(?:n:\s*\[([^\]]+)\])?[,\s]*(?:t:\s*\[([^\]]+)\])?[^{}]*\}/g;
 let m;
 while ((m = re.exec(sfxBlock))) {
   const name = m[1];
@@ -152,7 +176,16 @@ while ((m = re.exec(sfxBlock))) {
     t.push(parseFloat(parts[3]));
     if (parts[4] !== undefined) t.push(parseFloat(parts[4]));
   }
-  SFX[name] = { n, t };
+  /* t2 = 第二层音调（光剑这类双层音色），有就一起算进电平 */
+  const t2m = m[0].match(/t2:\s*\[([^\]]+)\]/);
+  let t2 = null;
+  if (t2m) {
+    const parts = t2m[1].split(',').map(s => s.trim());
+    t2 = [parseFloat(parts[0]), parseFloat(parts[1]), parts[2].replace(/'/g, '')];
+    t2.push(parseFloat(parts[3]));
+    if (parts[4] !== undefined) t2.push(parseFloat(parts[4]));
+  }
+  SFX[name] = { n, t, t2 };
 }
 
 /* audio.js 里其它固定音效（手工抄参数，改那边这里要跟着改） */
@@ -162,9 +195,28 @@ const FIXED = {
   hit: () => [simTone(180, 0.04, 'square', 0.017, 120)],
   hurt: () => [simTone(140, 0.12, 'sawtooth', 0.05, 60), simNoise(0.09, 0.05, 600)],
   boom: () => [simNoise(0.28, 0.11, 900), simTone(90, 0.22, 'triangle', 0.05, 40)],
+  pop: () => [simNoise(0.20, 0.085, 760), simTone(132, 0.17, 'triangle', 0.034, 54),
+    simBurst(0.10, 0.038, 1300, 380)],
+  'pop:mini': () => [simNoise(0.14, 0.05, 700), simTone(150, 0.13, 'triangle', 0.022, 62)],
+  scream: () => [simBurst(0.46, 0.062, 3200, 900), simTone(2350, 0.42, 'sawtooth', 0.026, 880),
+    simTone(118, 0.48, 'triangle', 0.028, 58)],
+  'scream:charge': () => [simTone(170, 0.80, 'sawtooth', 0.016, 430), simNoise(0.40, 0.014, 1100)],
+  spit: () => [simNoise(0.26, 0.070, 520), simTone(196, 0.20, 'sine', 0.026, 74),
+    simBurst(0.14, 0.034, 820, 300)],
+  tinnitus: () => [simTone(3720, 0.62, 'sine', 0.010, 3280)],
   shotgun: () => [simNoise(0.14, 0.098, 1800), simTone(200, 0.09, 'sawtooth', 0.042, 80)],
-  flame: () => [simNoise(0.16, 0.088, 700)],
+  flame: () => [simBurst(0.22, 0.050, 1150, 300), simTone(108, 0.19, 'sawtooth', 0.020, 62),
+    simNoise(0.09, 0.030, 2400)],
+  frost: () => [simBurst(0.20, 0.044, 5600, 2300), simTone(1720, 0.15, 'sine', 0.012, 2900),
+    simNoise(0.10, 0.026, 3600)],
   qi: () => [simBurst(0.14, 0.045, 4400, 1500), simTone(1500, 0.16, 'sine', 0.018, 3000)],
+  /* 持续光束的常驻嗡鸣（audio.js 的 A.beam）：参数必须和那边一致 */
+  'beam:red': () => [simPadLP(168, 'sawtooth', 0.0033, 1.2, 1100),
+    simPadLP(168.7, 'sawtooth', 0.0027, 1.2, 1100),
+    simPadLP(337.7, 'triangle', 0.0018, 1.2, 1100), simHissSteady(0.0023, 2600, 0.8, 1.2)],
+  'beam:melt': () => [simPadLP(84, 'sawtooth', 0.0037, 1.2, 620),
+    simPadLP(84.7, 'sawtooth', 0.0031, 1.2, 620),
+    simPadLP(168.8, 'triangle', 0.0020, 1.2, 620), simHissSteady(0.0027, 1480, 0.8, 1.2)],
   zap: () => [simTone(1200, 0.07, 'sawtooth', 0.030, 320)],
   'impact:gun': () => [simBurst(0.04, 0.060, 1500, 520), simTone(230, 0.04, 'triangle', 0.024, 120)],
   'impact:melee': () => [simBurst(0.045, 0.042, 1800, 620), simTone(165, 0.05, 'square', 0.016, 90)],
@@ -194,6 +246,7 @@ for (const k of Object.keys(SFX)) {
       const out = [];
       if (s.n) out.push(simBurst(s.n[0], s.n[1], s.n[2], s.n[3]));
       if (s.t) out.push(simTone(s.t[0], s.t[1], s.t[2], s.t[3], s.t[4]));
+      if (s.t2) out.push(simTone(s.t2[0], s.t2[1], s.t2[2], s.t2[3], s.t2[4]));
       return out;
     })
   });

@@ -11,6 +11,33 @@
 
   var R = {};
 
+  /* 主角贴图是 24x28 世界像素（原图 48x56，px:2），比丧尸高一倍。
+     drawActor 以帧中心为锚点，直接按 p.y 画的话脚底会落到 p.y+14，
+     而场景里其它角色的站立线在 p.y+6 左右（深度排序也用 p.y）。
+     所以整体上抬 7px：脚底落在 p.y+7，和原来 12x14 的小人一致。 */
+  var PSPRITE_LIFT = -7;
+
+  /* 鲸鱼娘四向 x 6 帧（0/1 站立、2~5 行走），自己按步频挑帧，
+     不走 drawActor 的切腿补间。 */
+  function whaleFrame(dir, i) {
+    return 'player_whale_' + dir + '_' + i;
+  }
+
+  /* 当前该用哪个朝向的贴图：设置里关掉"跟随朝向"就恒为正面 */
+  function faceOf(p) {
+    if (HS.Game && HS.Game.turnView === false) return 'dn';
+    return p.faceDir || 'dn';
+  }
+
+  /* 持枪锚点：不同朝向手的位置不一样，正面在腰侧、背面在肩后。
+     side 是枪相对身体的横向偏移（世界像素）。 */
+  var GUN_ANCHOR = {
+    dn: { y: -2.0, side: 1.9 },
+    up: { y: -3.2, side: 1.4 },
+    lf: { y: -2.0, side: -2.2 },
+    rt: { y: -2.0, side: 2.2 }
+  };
+
   /* ---------------- 地图地面 ---------------- */
 
   /* ---------------- 末世街区：道路网格 ---------------- */
@@ -1016,6 +1043,730 @@
     }
   };
 
+  /* ---------------- 公路隧道地面 ---------------- */
+
+  /**
+   * 事故现场的地面痕迹 —— 全部烘焙进区块缓存，所以可以放心画细节：
+   *   上游拖过来的刹车痕 → 烟熏焦黑 → 碎玻璃 → 干涸的血 → 散落的零件与油渍。
+   * 车本身是 obstacles.js 生成的道具（有碰撞、能搜刮），这里只负责"那摊痕迹"。
+   */
+  function accidentGround(b, site) {
+    var k = site.k, ay = site.y, side = site.side;
+    var ROADH = HS.World.TUN_ROAD || 56;
+    var hh = function (f) { return U.hash(k, f, 6121); };
+    var px = side * (26 + hh(1) * 18);      // 车堆大致中心
+    var i, yy;
+
+    /* 1. 刹车痕：从上游 200px 一路擦到车尾，两对轮子、带一点偏摆 ——
+       这是"事故现场"最直观的引导线，画淡了就白画（第一版就是看不见） */
+    for (var t = 0; t < 2; t++) {
+      var sx = px + (t === 0 ? -11 : 11) + (hh(2 + t) - 0.5) * 5;
+      var y0 = ay - 200 - hh(4 + t) * 46;
+      for (var seg = 0; seg < 20; seg++) {
+        yy = y0 + seg * 11;
+        if (yy > ay + 10) break;
+        var drift = (yy - y0) / 230 * (hh(6 + t) - 0.5) * 34;
+        /* 先擦亮一层（胎面把沥青磨白），再在中间压一道胎印 ——
+           只画纯黑的话，在深色沥青上等于没画 */
+        b.fillStyle = 'rgba(158,168,180,0.14)';
+        b.fillRect(Math.round(sx + drift) - 1, Math.round(yy), 5, 12);
+        b.fillStyle = t === 0 ? 'rgba(4,5,7,0.46)' : 'rgba(4,5,7,0.38)';
+        b.fillRect(Math.round(sx + drift), Math.round(yy), 3, 12);
+        if (seg % 3 === 0) b.fillRect(Math.round(sx + drift) + 3, Math.round(yy) + 2, 1, 8);
+      }
+    }
+
+    /* 2. 烟熏：烧过的地方压一层灰黑，但**不能是一块实心黑斑** ——
+       分三块错位叠，边缘才对得上沥青的颗粒（一开始画成一块，远看像个洞） */
+    b.fillStyle = 'rgba(12,13,16,0.28)';
+    ellipseFill(b, px, ay, 62 + hh(10) * 18, 46 + hh(11) * 14);
+    b.fillStyle = 'rgba(6,7,9,0.34)';
+    ellipseFill(b, px + side * 8, ay - 10, 40, 28);
+    b.fillStyle = 'rgba(6,7,9,0.30)';
+    ellipseFill(b, px - side * 20, ay + 18, 30, 20);
+    /* 漏出来的燃油：一小片湿黑，反着顶灯的光 */
+    b.fillStyle = 'rgba(28,24,34,0.30)';
+    ellipseFill(b, px - side * 12, ay + 6, 16, 10);
+
+    /* 2b. 浮灰：撞完扬起来、十几年也没散的那层灰。
+       它让这一片比周围亮一点点 —— 远看就知道"这里出过事" */
+    b.fillStyle = 'rgba(164,164,156,0.07)';
+    ellipseFill(b, px, ay + 4, 74 + hh(12) * 20, 56 + hh(13) * 16);
+    b.fillStyle = 'rgba(150,150,142,0.06)';
+    ellipseFill(b, px + side * 18, ay - 22, 52, 40);
+
+    /* 3. 碎玻璃：暗处唯一的亮点，也是"这里撞过"最快的读法 */
+    for (i = 0; i < 52; i++) {
+      var gx = px + (hh(20 + i) - 0.5) * 150;
+      var gy = ay + (hh(60 + i) - 0.5) * 160;
+      if (Math.abs(gx) > 84) continue;
+      b.fillStyle = i % 3 === 0 ? 'rgba(228,242,254,0.55)' : 'rgba(150,168,186,0.26)';
+      var gsz = i % 5 === 0 ? 2 : 1;
+      b.fillRect(Math.round(gx), Math.round(gy), gsz, gsz);
+    }
+
+    /* 4. 干涸的血：从车堆里往外拖出的一道，末端越拖越淡 */
+    var bx = px - side * (16 + hh(80) * 16);
+    var byy = ay + (hh(81) - 0.5) * 44;
+    for (i = 0; i < 9; i++) {
+      b.fillStyle = 'rgba(72,14,12,' + (0.42 - i * 0.035).toFixed(3) + ')';
+      b.fillRect(Math.round(bx - i * side * 5), Math.round(byy + Math.sin(i * 0.9) * 3),
+        Math.max(1, 3 - (i >> 2)), Math.max(1, 2 - (i >> 3)));
+    }
+
+    /* 4a. 没跑出来的人：一具横在车头前，另一具有机会被拖到步道上。
+       这一笔比任何花纹都管用 —— 有尸体的车堆才是"事故"，没有的只是"乱停车" */
+    corpse(b, px - side * (28 + hh(110) * 14), ay + 26 + hh(111) * 22,
+      hh(112) * U.TAU, k * 7 + 3);
+    if (hh(113) < 0.62) {
+      corpse(b, px + side * (30 + hh(114) * 16), ay - 44 - hh(115) * 22,
+        hh(116) * U.TAU, k * 7 + 5);
+    }
+    /* 掉出来的行李箱：深色箱子 + 一道浅色拉杆 */
+    for (i = 0; i < 2; i++) {
+      var lx = px + (hh(120 + i) - 0.5) * 90;
+      var ly = ay + (hh(124 + i) - 0.5) * 96;
+      if (Math.abs(lx) > 78) continue;
+      b.fillStyle = 'rgba(38,32,30,0.75)';
+      b.fillRect(Math.round(lx), Math.round(ly), 5, 4);
+      b.fillStyle = 'rgba(150,140,120,0.35)';
+      b.fillRect(Math.round(lx) + 1, Math.round(ly) + 1, 3, 1);
+    }
+
+    /* 4b. 撞击点：两车咬在一起的地方，卷起来的铁皮上炸开一撮白色玻璃屑 */
+    var ix0 = px + side * 6, iy0 = ay + (hh(90) - 0.5) * 18;
+    b.fillStyle = 'rgba(16,16,19,0.55)';
+    ellipseFill(b, ix0, iy0, 10, 6);
+    for (i = 0; i < 12; i++) {
+      var ia = hh(300 + i) * U.TAU;
+      var il = 3 + hh(320 + i) * 14;
+      b.fillStyle = i % 2 ? 'rgba(228,242,254,0.44)' : 'rgba(160,176,192,0.24)';
+      b.fillRect(Math.round(ix0 + Math.cos(ia) * il), Math.round(iy0 + Math.sin(ia) * il * 0.8), 1, 1);
+    }
+
+    /* 5. 散落的零件：橡胶块、断裂的保险杠、掉出来的行李箱 */
+    for (i = 0; i < 9; i++) {
+      var dx = px + (hh(100 + i) - 0.5) * 116;
+      var dy = ay + (hh(130 + i) - 0.5) * 124;
+      if (Math.abs(dx) > 82) continue;
+      var kind = hh(160 + i);
+      b.fillStyle = kind < 0.45 ? 'rgba(22,22,25,0.62)'
+        : (kind < 0.8 ? 'rgba(58,52,46,0.55)' : 'rgba(104,44,32,0.45)');
+      b.fillRect(Math.round(dx), Math.round(dy), 1 + Math.round(hh(190 + i) * 3), 1 + Math.round(hh(200 + i) * 2));
+    }
+
+    /* 5b. 顶上震下来的混凝土块：比零件大、比车矮，一眼知道这里塌过 */
+    for (i = 0; i < 6; i++) {
+      var kx = px + (hh(210 + i) - 0.5) * 150;
+      var ky = ay + (hh(230 + i) - 0.5) * 150;
+      if (Math.abs(kx) > 82) continue;
+      b.fillStyle = 'rgba(72,76,84,0.78)';
+      b.fillRect(Math.round(kx), Math.round(ky),
+        2 + Math.round(hh(250 + i) * 3), 2 + Math.round(hh(252 + i) * 2));
+      b.fillStyle = 'rgba(126,132,142,0.42)';
+      b.fillRect(Math.round(kx), Math.round(ky), 1, 1);
+    }
+
+    /* 6. 被撞歪的检修步道边线：事故点旁边那一小段路缘被蹭掉了 */
+    b.fillStyle = 'rgba(0,0,0,0.35)';
+    b.fillRect(Math.round(side * (ROADH - 1)), Math.round(ay - 26), 2, 44);
+  }
+
+  /**
+   * 一条钻进山体的走廊。
+   *
+   * 几何完全由 x 决定（和前几张直路图一样，沿 y 无限延伸）：
+   *   |x| < 56          沥青路面（双车道）
+   *   56 ~ 88           检修步道（水泥，比路面亮一档）
+   *   88 ~ 132          混凝土衬砌 —— 这一段是实心墙，碰撞在 obstacles.js
+   *   |x| > 132         山体（几乎是黑的）
+   *
+   * 隧道感靠三样东西堆出来：顶部横梁投下的黑带、每 128px 一盏顶灯的光池、
+   * 以及墙面那圈被灯照亮的腰线。没有一样是"墙"，但玩家一眼就知道自己在洞里。
+   *
+   * 破败感同理：墙皮剥落露钢筋、墙根堆碎石、血手印、坏掉的顶灯，
+   * 再加上每 1152px 一处的连环追尾（痕迹在 accidentGround，车在 obstacles.js）。
+   */
+  R.tunnelBlock = function (b, bx, by) {
+    var W = HS.World;
+    var BL = W.BLOCK;
+    var HALF = W.TUN_HALF || 88;
+    var WALL = W.TUN_WALL || 44;
+    var ROADH = W.TUN_ROAD || 56;
+    var sx = Math.round(bx / BL), sy = Math.round(by / BL);
+    var h0 = function (i, s) { return U.hash(sx, sy, i * 151 + s); };
+    var i, x, y;
+
+    /* ---------- 0. 山体 ---------- */
+    b.fillStyle = '#0b0c0e';
+    b.fillRect(bx, by, BL, BL);
+    /* 岩石纹理：只在墙外侧画，走廊里看不到 */
+    for (i = 0; i < 26; i++) {
+      var rx = bx + h0(i, 1) * BL;
+      if (Math.abs(rx) < HALF + WALL) continue;
+      var ry = by + h0(i, 2) * BL;
+      var rl = 6 + h0(i, 3) * 22;
+      b.strokeStyle = h0(i, 4) < 0.5 ? 'rgba(58,60,66,0.35)' : 'rgba(24,25,28,0.7)';
+      b.lineWidth = 1;
+      b.beginPath();
+      b.moveTo(rx, ry);
+      b.lineTo(rx + (h0(i, 5) - 0.5) * rl, ry + rl * 0.7);
+      b.stroke();
+    }
+
+    /* ---------- 1. 路面 ---------- */
+    b.fillStyle = '#1b1d21';
+    b.fillRect(-ROADH, by, ROADH * 2, BL);
+    /* 沥青颗粒 */
+    for (i = 0; i < 60; i++) {
+      var ax = (h0(i, 11) - 0.5) * 2 * ROADH;
+      var ay = by + h0(i, 12) * BL;
+      b.fillStyle = h0(i, 13) < 0.5 ? 'rgba(120,126,136,0.05)' : 'rgba(0,0,0,0.22)';
+      b.fillRect(Math.round(ax), Math.round(ay), 1, 1 + (h0(i, 14) > 0.8 ? 1 : 0));
+    }
+    /* 车辙：两条被压亮的轮迹 */
+    for (i = 0; i < 2; i++) {
+      var lx = i === 0 ? -20 : 20;
+      b.fillStyle = 'rgba(150,158,168,0.035)';
+      b.fillRect(lx - 5, by, 10, BL);
+      b.fillStyle = 'rgba(0,0,0,0.10)';
+      b.fillRect(lx - 9, by, 3, BL);
+      b.fillRect(lx + 6, by, 3, BL);
+    }
+
+    /* ---------- 2. 检修步道 ---------- */
+    for (var s2 = -1; s2 <= 1; s2 += 2) {
+      var wx0 = s2 > 0 ? ROADH : -HALF;
+      b.fillStyle = '#2b2d31';
+      b.fillRect(wx0, by, HALF - ROADH, BL);
+      /* 路缘石：靠车道那一侧亮一条 */
+      b.fillStyle = 'rgba(196,204,214,0.20)';
+      b.fillRect(s2 > 0 ? ROADH : -ROADH - 1, by, 1, BL);
+      /* 步道伸缩缝：每 48px 一道横缝 */
+      for (y = Math.floor(by / 48) * 48; y < by + BL; y += 48) {
+        b.fillStyle = 'rgba(0,0,0,0.35)';
+        b.fillRect(wx0, y, HALF - ROADH, 1);
+      }
+    }
+
+    /* ---------- 3. 混凝土衬砌 ---------- */
+    for (var s3 = -1; s3 <= 1; s3 += 2) {
+      var ix = s3 > 0 ? HALF : -HALF - WALL;   // 墙矩形左边
+      b.fillStyle = '#33363b';
+      b.fillRect(ix, by, WALL, BL);
+      /* 内壁受光：靠走廊这一侧 5px 亮带，是最重要的一条"立体感" */
+      b.fillStyle = 'rgba(198,208,220,0.16)';
+      b.fillRect(s3 > 0 ? ix : ix + WALL - 5, by, 5, BL);
+      b.fillStyle = 'rgba(120,130,144,0.10)';
+      b.fillRect(s3 > 0 ? ix + 5 : ix + WALL - 10, by, 5, BL);
+      /* 大面积污浊：一层层低透明度斑块，把"新水泥"泡成"泡了十几年的水泥" */
+      for (i = 0; i < 6; i++) {
+        var gyy = by + h0(i, 91 + s3 * 10) * BL;
+        var gxx = ix + 2 + h0(i, 92 + s3 * 10) * (WALL - 14);
+        b.fillStyle = 'rgba(12,13,16,' + (0.06 + h0(i, 93 + s3 * 10) * 0.09).toFixed(3) + ')';
+        b.fillRect(Math.round(gxx), Math.round(gyy),
+          8 + Math.round(h0(i, 94 + s3 * 10) * 18), 4 + Math.round(h0(i, 95 + s3 * 10) * 13));
+      }
+      /* 墙板缝：每 64px 一道，缝里塞着黑 */
+      for (y = Math.floor(by / 64) * 64; y < by + BL; y += 64) {
+        b.fillStyle = 'rgba(0,0,0,0.42)';
+        b.fillRect(ix, y, WALL, 2);
+        b.fillStyle = 'rgba(198,208,220,0.07)';
+        b.fillRect(ix, y + 2, WALL, 1);
+      }
+      /* 水渍 / 煤烟：从板缝往下淌的一段 */
+      for (i = 0; i < 3; i++) {
+        var dy0 = by + h0(i, 21 + s3 * 10) * BL;
+        var dh = 10 + h0(i, 22 + s3 * 10) * 26;
+        b.fillStyle = 'rgba(10,12,14,0.30)';
+        b.fillRect(ix + (s3 > 0 ? 3 : WALL - 9), dy0, 6, dh);
+      }
+      /* 剥落的墙皮：一片比墙更暗的补丁 + 崩开的亮边，有的已经露出钢筋 */
+      for (i = 0; i < 2; i++) {
+        if (h0(i, 61 + s3 * 10) > 0.60) continue;
+        var py2 = by + h0(i, 63 + s3 * 10) * BL;
+        var ph2 = 14 + h0(i, 64 + s3 * 10) * 26;
+        var pw2 = 9 + h0(i, 65 + s3 * 10) * 15;
+        var pox = s3 > 0 ? ix + 4 + h0(i, 66 + s3 * 10) * 16
+          : ix + WALL - 5 - pw2 - h0(i, 66 + s3 * 10) * 16;
+        /* 掉了一层皮：底色只比墙暗一档（别用近黑，否则远看像墙上开了个洞），
+           边缘补一圈亮碴，中间再撒几粒露出来的骨料 */
+        b.fillStyle = 'rgba(34,37,42,0.62)';
+        b.beginPath();
+        b.moveTo(pox, py2);
+        b.lineTo(pox + pw2, py2 + 3);
+        b.lineTo(pox + pw2 - 2, py2 + ph2);
+        b.lineTo(pox + 1, py2 + ph2 - 4);
+        b.closePath();
+        b.fill();
+        b.strokeStyle = 'rgba(202,212,224,0.14)';
+        b.lineWidth = 1;
+        b.stroke();
+        for (var pi = 0; pi < 4; pi++) {
+          b.fillStyle = 'rgba(150,160,172,0.20)';
+          b.fillRect(Math.round(pox + 2 + h0(pi, 68 + s3 * 10) * (pw2 - 4)),
+            Math.round(py2 + 2 + h0(pi, 69 + s3 * 10) * (ph2 - 6)), 1, 1);
+        }
+        if (h0(i, 67 + s3 * 10) < 0.55) {
+          b.strokeStyle = 'rgba(126,78,52,0.50)';
+          b.beginPath();
+          b.moveTo(pox + 2, py2 + ph2 * 0.46);
+          b.lineTo(pox + pw2 - 1, py2 + ph2 * 0.46 + 5);
+          b.moveTo(pox + 3, py2 + ph2 * 0.26);
+          b.lineTo(pox + pw2 - 2, py2 + ph2 * 0.26 + 3);
+          b.stroke();
+        }
+      }
+      /* 墙根堆着的碎石：塌下来的混凝土顺着检修步道散开 */
+      for (i = 0; i < 5; i++) {
+        if (h0(i, 71 + s3 * 10) > 0.68) continue;
+        var rx2 = s3 > 0 ? HALF - 3 - h0(i, 72 + s3 * 10) * 8 : -HALF + 3 + h0(i, 72 + s3 * 10) * 8;
+        var ry2 = by + h0(i, 73 + s3 * 10) * BL;
+        b.fillStyle = h0(i, 74 + s3 * 10) < 0.5 ? 'rgba(96,100,108,0.62)' : 'rgba(56,60,66,0.70)';
+        b.fillRect(Math.round(rx2), Math.round(ry2),
+          2 + Math.round(h0(i, 75 + s3 * 10) * 2), 1 + Math.round(h0(i, 76 + s3 * 10) * 2));
+      }
+      /* 血手印：有人被拖进黑里的时候扶过墙 */
+      if (h0(0, 81 + s3 * 10) < 0.20) {
+        var hy = by + h0(1, 82 + s3 * 10) * BL;
+        var hx = s3 > 0 ? ix + 6 : ix + WALL - 13;
+        b.fillStyle = 'rgba(78,14,12,0.48)';
+        for (i = 0; i < 3; i++) b.fillRect(hx + (i % 2) * 3, hy + i * 3, 2, 1);
+        b.fillStyle = 'rgba(78,14,12,0.22)';
+        b.fillRect(hx + 1, hy + 9, 2, 8 + h0(2, 83 + s3 * 10) * 12);
+      }
+    }
+
+    /* ---------- 4. 车道标线 ---------- */
+    /* 中线虚线（白，掉漆） */
+    for (y = Math.floor(by / 96) * 96; y < by + BL; y += 96) {
+      var mh = U.hash(sx, Math.round(y / 96), 911);
+      if (mh < 0.18) continue;
+      b.fillStyle = 'rgba(226,232,238,' + (0.16 + mh * 0.12).toFixed(2) + ')';
+      b.fillRect(-1, y + 10, 2, 40);
+    }
+    /* 边线 */
+    b.fillStyle = 'rgba(226,232,238,0.10)';
+    b.fillRect(-ROADH + 3, by, 1.5, BL);
+    b.fillRect(ROADH - 4.5, by, 1.5, BL);
+
+    /* ---------- 5. 地面痕迹 ---------- */
+    for (i = 0; i < 4; i++) {
+      var ox2 = (h0(i, 31) - 0.5) * 2 * (ROADH - 8);
+      var oy2 = by + h0(i, 32) * BL;
+      ellipseFill(b, ox2, oy2, 5 + h0(i, 33) * 12, 3 + h0(i, 34) * 6,
+        h0(i, 35) < 0.5 ? 'rgba(0,0,0,0.28)' : 'rgba(40,44,50,0.35)');
+    }
+    for (i = 0; i < 2; i++) {
+      var cx2 = (h0(i, 41) - 0.5) * 2 * (ROADH - 10);
+      var cy2 = by + h0(i, 42) * BL;
+      crack(b, cx2, cy2, h0(i, 43) * 3.14, 10 + h0(i, 44) * 16,
+        sx * 17 + i, 921 + i, 'rgba(0,0,0,0.35)', 1);
+    }
+    /* 顶灯掉下来的碎玻璃：暗处的一点反光 */
+    if (h0(0, 51) > 0.55) {
+      var gx2 = (h0(1, 52) - 0.5) * 24;
+      var gy2 = by + h0(2, 53) * BL;
+      b.fillStyle = 'rgba(200,220,240,0.30)';
+      for (i = 0; i < 6; i++) {
+        b.fillRect(Math.round(gx2 + (h0(i, 54) - 0.5) * 16),
+          Math.round(gy2 + (h0(i, 55) - 0.5) * 16), 1, 1);
+      }
+    }
+
+    /* ---------- 5b. 事故现场的地面痕迹 ----------
+       每 1152px 一处连环追尾（车是 obstacles.js 的道具，这里只画那摊痕迹）。
+       痕迹铺在标线之上、横梁黑影之下 —— 焦黑要盖住白线，但不该盖住光影。 */
+    var accBuf = R._accBuf || (R._accBuf = []);
+    HS.World.accidentsIn(by, by + BL, accBuf);
+    for (var ai = 0; ai < accBuf.length; ai++) accidentGround(b, accBuf[ai]);
+
+    /* ---------- 6. 顶部横梁的黑影 ----------
+       横梁不画实体，只画它投在路面上的影子：一条横向的黑带 + 两侧更黑。
+       视觉上把走廊切成一段一段，这是"隧道"最省事也最有效的一笔。 */
+    for (y = Math.floor(by / 192) * 192; y < by + BL; y += 192) {
+      var bandY = y + 96;
+      var grd = b.createLinearGradient(0, bandY - 16, 0, bandY + 16);
+      grd.addColorStop(0, 'rgba(0,0,0,0)');
+      grd.addColorStop(0.5, 'rgba(0,0,0,0.42)');
+      grd.addColorStop(1, 'rgba(0,0,0,0)');
+      b.fillStyle = grd;
+      b.fillRect(-HALF, bandY - 16, HALF * 2, 32);
+    }
+
+    /* 顶灯不再烘焙在这里：它要闪，见 R.drawTunnelLamps（每帧重画，灯位贴在车道边） */
+  };
+
+  R.tunnel = function (b, cx, cy, vw, vh) {
+    var BL = HS.World.BLOCK;
+    var x0 = Math.floor(cx / BL) * BL - BL;
+    var y0 = Math.floor(cy / BL) * BL - BL;
+    var x1 = cx + vw + BL, y1 = cy + vh + BL;
+
+    for (var bx = x0; bx < x1; bx += BL) {
+      for (var by = y0; by < y1; by += BL) {
+        var key = 't' + bx + '|' + by;
+        var cv = R._gcache[key];
+        if (!cv) {
+          if (R._gcount > 40) { R._gcache = {}; R._gcount = 0; }
+          cv = HS.P.createCanvas(BL, BL);
+          var c = cv.getContext('2d');
+          c.translate(-bx, -by);
+          R.tunnelBlock(c, bx, by);
+          R._gcache[key] = cv;
+          R._gcount++;
+        }
+        b.drawImage(cv, bx, by);
+      }
+    }
+  };
+
+  /**
+   * 隧道压暗：一层固定的冷色底噪（两侧与上下略深），
+   * 真正的"越走越黑"由 drawTunnelLamps 的径向圈负责（中心是玩家、半径是经验圈）。
+   */
+  R.drawTunnelDark = function (b, run) {
+    var map = run && run.map;
+    if (!map || !map.tunnel) return;
+    var vw = P.VW, vh = P.VH;
+    if (!R._tunDark || R._tunW !== vw || R._tunH !== vh) {
+      R._tunW = vw; R._tunH = vh;
+      R._tunDark = P.createCanvas(vw, vh);
+      var c = R._tunDark.getContext('2d');
+      /* 整体压一层冷灰：隧道里的光是死白的，不是太阳 */
+      c.fillStyle = 'rgba(6,9,14,0.22)';
+      c.fillRect(0, 0, vw, vh);
+      /* 左右两侧再压一道：墙根最暗，视线自然收在走廊中间 */
+      var gl = c.createLinearGradient(0, 0, vw, 0);
+      gl.addColorStop(0, 'rgba(2,4,8,0.30)');
+      gl.addColorStop(0.22, 'rgba(2,4,8,0.05)');
+      gl.addColorStop(0.5, 'rgba(2,4,8,0)');
+      gl.addColorStop(0.78, 'rgba(2,4,8,0.05)');
+      gl.addColorStop(1, 'rgba(2,4,8,0.30)');
+      c.fillStyle = gl;
+      c.fillRect(0, 0, vw, vh);
+      /* 上下也收一点，走廊像一条向远处收的管子 */
+      var gv = c.createLinearGradient(0, 0, 0, vh);
+      gv.addColorStop(0, 'rgba(2,4,8,0.22)');
+      gv.addColorStop(0.14, 'rgba(2,4,8,0)');
+      gv.addColorStop(0.86, 'rgba(2,4,8,0)');
+      gv.addColorStop(1, 'rgba(2,4,8,0.22)');
+      c.fillStyle = gv;
+      c.fillRect(0, 0, vw, vh);
+    }
+    b.drawImage(R._tunDark, 0, 0);
+  };
+
+  /* ---------------- 公路隧道顶灯（每帧，会闪） ---------------- */
+
+  /**
+   * 隧道顶灯。以前是烘焙在地面缓存里的一条亮线 + 一团光晕，问题有两个：
+   *   ① 灯画在走廊正中，读起来像"地面上浮着一根发光的棍子"；
+   *   ② 烘焙的东西不可能闪，暗成一片的洞窟里连一点"电还在跑"的活气都没有。
+   *
+   * 现在：灯贴在**车道边**（路缘石上方，x = ±62），用一根短托架连到衬砌上，
+   * 灯罩是金属壳 + 里面两根灯管；亮度和光池每帧按灯位哈希重算 ——
+   * 大多数灯是稳的，一小部分接触不良（一阵一阵闪），还有几盏快坏了（低频呼吸）。
+   */
+  R._lampGlow = null;
+  function lampGlow() {
+    if (R._lampGlow) return R._lampGlow;
+    var gs = 128;
+    var cv = P.createCanvas(gs, gs);
+    var c = cv.getContext('2d');
+    var g = c.createRadialGradient(gs / 2, gs / 2, 1, gs / 2, gs / 2, gs / 2);
+    g.addColorStop(0, 'rgba(255,228,182,0.58)');
+    g.addColorStop(0.34, 'rgba(255,208,148,0.24)');
+    g.addColorStop(0.68, 'rgba(255,196,132,0.07)');
+    g.addColorStop(1, 'rgba(255,190,126,0)');
+    c.fillStyle = g;
+    c.fillRect(0, 0, gs, gs);
+    R._lampGlow = cv;
+    return cv;
+  }
+
+  R._fireGlow = null;
+  function fireGlow() {
+    if (R._fireGlow) return R._fireGlow;
+    var gs = 160;
+    var cv = P.createCanvas(gs, gs);
+    var c = cv.getContext('2d');
+    var g = c.createRadialGradient(gs / 2, gs / 2, 1, gs / 2, gs / 2, gs / 2);
+    g.addColorStop(0, 'rgba(255,206,140,0.66)');
+    g.addColorStop(0.3, 'rgba(255,150,66,0.30)');
+    g.addColorStop(0.62, 'rgba(226,80,24,0.11)');
+    g.addColorStop(1, 'rgba(180,44,10,0)');
+    c.fillStyle = g;
+    c.fillRect(0, 0, gs, gs);
+    R._fireGlow = cv;
+    return cv;
+  }
+
+  R.drawTunnelLamps = function (b, run) {
+    var map = run && run.map;
+    if (!map || !map.tunnel) return;
+    var L = HS.Light;
+    var glow = lampGlow();
+    var top = P.camY - 70, bot = P.camY + P.VH + 70;
+    var lid0 = Math.round((top - L.OFF) / L.STEP);
+    var lid1 = Math.round((bot - L.OFF) / L.STEP);
+    var lights = R._lampLights || (R._lampLights = []);
+    lights.length = 0;
+
+    /* ---- 1. 这一屏有哪几盏灯、各亮多少（和索敌用的是同一个 lampFl） ---- */
+    for (var lid = lid0 - 1; lid <= lid1 + 1; lid++) {
+      var fl = L.lampFl(lid, run.t);
+      var pos = L.lampPos(lid);
+      lights.push({ x: pos.x, y: pos.y, fl: fl });
+    }
+
+    /* ---- 2. 黑暗层：低分辨率逐像素算暗度，再拉伸贴上来 ----
+       走过的弯路（都别再试）：
+         ① 离屏 canvas + destination-out 挖洞 —— 浏览器正常，微信小游戏的性能 SDK 会递归爆栈
+            （RangeError: Maximum call stack size exceeded @ CanvasRenderingContext2D）；
+         ② "矩形 + 每个光源一个逆时针圆"的路径一次 fill —— nonzero 规则下，**两个圆重叠**
+            的区域 winding 会变成 −1，反而被填黑，于是灯与灯之间的亮区变成一个大黑球；
+         ③ 多层叠暗度 —— alpha 是相乘的，10 层 × 0.094 实际只有 0.62，灯外还能看清东西。
+       现在直接算：在 1/3 分辨率上逐像素求"最亮的光源"（等价于索敌用的 vis），
+       写成一张黑色 RGBA 小图，putImageData + 拉伸盖上去。
+       25k 像素/帧，比两次全屏合成便宜，而且曲线和 Light.vis 完全一致。 */
+    var pgx = run.p.x - P.camX, pgy = run.p.y - P.camY;
+    var nr = L.nearR(run.p), fr = L.farR(run.p);
+
+    var fires = R._fires || (R._fires = []);
+    if (HS.World.firesIn) HS.World.firesIn(P.camY - 320, P.camY + P.VH + 320, fires);
+
+    var DS = 2;
+    var SW = Math.ceil(P.VW / DS), SH = Math.ceil(P.VH / DS);
+    if (!R._darkCv || R._darkW !== SW || R._darkH !== SH) {
+      R._darkW = SW; R._darkH = SH;
+      R._darkCv = P.createCanvas(SW, SH);
+      R._darkCtx = R._darkCv.getContext('2d');
+      R._darkImg = R._darkCtx.createImageData(SW, SH);
+    }
+    var img = R._darkImg, dpx = img.data;
+
+    /* 火焰亮度只跟时间有关，先算好，别在像素循环里重复调 */
+    var fireLit = R._fireLit || (R._fireLit = []);
+    fireLit.length = 0;
+    for (var fi2 = 0; fi2 < fires.length; fi2++) {
+      fireLit.push(L.fireFlick(run.t, fires[fi2].k));
+    }
+    /* 光形查表：每帧 5 万多个像素，别在循环里反复调函数 */
+    if (!R._shapeTab) {
+      var st = { n: 33, lamp: [], fire: [] };
+      for (var sk = 0; sk < st.n; sk++) {
+        st.lamp.push(L.lampShape(sk / (st.n - 1)));
+        st.fire.push(L.fireShape(sk / (st.n - 1)));
+      }
+      R._shapeTab = st;
+    }
+    var sTab = R._shapeTab, sMax = sTab.n - 1;
+    var lampN = lights.length, fireN = fires.length;
+    var o = 0;
+    for (var py = 0; py < SH; py++) {
+      var wy = P.camY + (py + 0.5) * DS;
+      for (var px = 0; px < SW; px++, o += 4) {
+        var wx = P.camX + (px + 0.5) * DS;
+        var v = 0;
+
+        /* 玩家那圈：核心 = 经验吸取范围，往外 smoothstep 收到全黑 */
+        var ddx = wx - run.p.x, ddy = wy - run.p.y;
+        var dd2 = ddx * ddx + ddy * ddy;
+        if (dd2 <= nr * nr) v = 1;
+        else {
+          var dd = Math.sqrt(dd2);
+          var uu = (dd - nr) / (fr - nr);
+          if (uu < 1) v = 1 - uu * uu * (3 - 2 * uu);
+        }
+
+        for (var li = 0; li < lampN; li++) {
+          var lp = lights[li];
+          if (lp.fl <= 0.03) continue;
+          var lx = wx - lp.x, ly = wy - lp.y;
+          var l2 = lx * lx + ly * ly;
+          if (l2 >= L.RADIUS * L.RADIUS) continue;
+          var lv2 = sTab.lamp[((Math.sqrt(l2) / L.RADIUS) * sMax) | 0] * lp.fl;
+          if (lv2 > v) v = lv2;
+        }
+
+        for (var fi3 = 0; fi3 < fireN; fi3++) {
+          var fp = fires[fi3];
+          var fx2 = wx - fp.x, fy2 = wy - fp.y;
+          var f2 = fx2 * fx2 + fy2 * fy2;
+          if (f2 >= L.FIRE_R * L.FIRE_R) continue;
+          var fv = sTab.fire[((Math.sqrt(f2) / L.FIRE_R) * sMax) | 0] * fireLit[fi3];
+          if (fv > v) v = fv;
+        }
+
+        var da = 0.94 * (1 - v);
+        if (da > 0.94) da = 0.94;
+        dpx[o] = 2; dpx[o + 1] = 3; dpx[o + 2] = 6;
+        dpx[o + 3] = (da * 255) | 0;
+      }
+    }
+    R._darkCtx.putImageData(img, 0, 0);
+    var sm = b.imageSmoothingEnabled;
+    b.imageSmoothingEnabled = true;
+    b.drawImage(R._darkCv, 0, 0, P.VW, P.VH);
+    b.imageSmoothingEnabled = sm;
+
+    /* ---- 2b. 黑暗里唯一看得见的东西：自己会发光的 ----
+       自爆尸的肚囊本来就透光（这是它的识别特征，也是"快炸了"的预告），
+       双首领一个是喉咙冷光、一个是透光的育囊 —— 让它们在黑段里自带一小圈光，
+       既合理，也保证 Boss 战不会在纯黑里打。普通丧尸不给光：看不见就锁不上。 */
+    if (!R._softDot) {
+      var ds = 64;
+      var dc = P.createCanvas(ds, ds);
+      var dctx = dc.getContext('2d');
+      var dg = dctx.createRadialGradient(ds / 2, ds / 2, 1, ds / 2, ds / 2, ds / 2);
+      dg.addColorStop(0, 'rgba(255,255,255,0.55)');
+      dg.addColorStop(0.4, 'rgba(255,255,255,0.18)');
+      dg.addColorStop(1, 'rgba(255,255,255,0)');
+      dctx.fillStyle = dg;
+      dctx.fillRect(0, 0, ds, ds);
+      R._softDot = dc;
+    }
+    var elist = run.enemies;
+    for (var ei = 0; ei < elist.length; ei++) {
+      var ee = elist[ei];
+      if (ee.dead) continue;
+      var ex = ee.x - P.camX, ey = ee.y - P.camY;
+      if (ex < -90 || ex > P.VW + 90 || ey < -90 || ey > P.VH + 90) continue;
+      if (ee.def && ee.def.bomber && R._bombGlow) {
+        var rage = 1 - Math.max(0, ee.hp / ee.maxHp);
+        var pl = 0.55 + 0.45 * Math.sin(run.t * (4 + rage * 7) + ee.seed);
+        var pr = ee.r * (2.4 + 0.4 * pl);
+        b.save();
+        b.globalCompositeOperation = 'lighter';
+        b.globalAlpha = 0.42 + 0.30 * pl;
+        b.drawImage(R._bombGlow, ex - pr, ey - pr, pr * 2, pr * 2);
+        b.restore();
+      } else if (ee.boss) {
+        var br2 = ee.r * 4.6 + 16;
+        b.save();
+        b.globalCompositeOperation = 'lighter';
+        b.globalAlpha = 0.52 + 0.10 * Math.sin(run.t * 2.4 + (ee.seed || 0));
+        b.drawImage(R._softDot, ex - br2, ey - br2, br2 * 2, br2 * 2);
+        b.restore();
+        /* 站进暗处时，首领得看得见 —— 它是变异体，身上本来就有荧光。
+           光圈外的 Boss 只留一层半透明剪影，玩家知道"它在那个方向"，但看不清细节：
+           既能找位置，又不至于把"黑暗"这件事一笔勾销。 */
+        var bv = L.vis(ee.x, ee.y, run);
+        if (bv < 0.34) {
+          b.save();
+          b.globalAlpha = 0.30 + 0.34 * (1 - bv);
+          R.drawActor(b, ee.spriteName || 'boss', ex, ey - 4 - (ee.airH || 0),
+            ee.scale, ee.anim, ee.gait, ee.lean, ee.hitSprite || 'boss_hit', 0);
+          b.restore();
+          /* 技能预兆绝不能藏在黑暗里：尖啸者常年站得远，
+             它的收束环 / 声压环就是玩家唯一的"要喊了"读法。 */
+          if (ee.def && ee.def.bossType === 'shrieker' && (ee.hSt === 1 || ee.hSt === 5)) {
+            b.save();
+            b.translate(-P.camX, -P.camY);
+            b.globalAlpha = 0.92;
+            R.drawBossShriek(b, ee, run.p);
+            b.restore();
+          }
+        }
+      }
+    }
+
+    /* ---- 3. 玩家脚边那点光（手电 / 火机）—— 核心圈之所以是暖的 ---- */
+    if (!R._playerGlow) {
+      var ps = 96;
+      var pc = P.createCanvas(ps, ps);
+      var pctx = pc.getContext('2d');
+      var pg = pctx.createRadialGradient(ps / 2, ps / 2, 1, ps / 2, ps / 2, ps / 2);
+      pg.addColorStop(0, 'rgba(255,232,196,0.42)');
+      pg.addColorStop(0.45, 'rgba(255,214,164,0.16)');
+      pg.addColorStop(1, 'rgba(255,200,150,0)');
+      pctx.fillStyle = pg;
+      pctx.fillRect(0, 0, ps, ps);
+      R._playerGlow = pc;
+    }
+    b.save();
+    b.globalCompositeOperation = 'lighter';
+    b.globalAlpha = 0.62;
+    /* 暖光只铺到核心圈略外一圈：再大就盖住了"越往外越黑"的层次 */
+    b.drawImage(R._playerGlow, pgx - nr * 1.5, pgy - nr * 1.42, nr * 3, nr * 2.84);
+    b.restore();
+
+    /* ---- 4. 再画灯本身（托架 + 灯罩 + 灯管 + 光池） ---- */
+    for (var i2 = 0; i2 < lights.length; i2++) {
+      var lm = lights[i2];
+      var sx = lm.x - P.camX, sy = lm.y - P.camY;
+      var sdx = lm.x >= 0 ? 1 : -1;
+      if (lm.fl > 0.02) {
+        /* 暖光池只补色，不再负责"照亮" —— 挖洞那一步已经把细节放出来了 */
+        b.save();
+        b.globalCompositeOperation = 'lighter';
+        b.globalAlpha = lm.fl * 0.5;
+        b.drawImage(glow, sx - 96, sy - 110, 192, 220);
+        b.restore();
+      }
+      /* 托架：从灯罩往衬砌那一侧伸出去，这是"它不是浮在半空"的关键一笔 */
+      b.fillStyle = 'rgba(26,29,34,0.96)';
+      b.fillRect(sdx > 0 ? sx + 10 : sx - 34, sy - 1, 24, 2);
+      b.fillRect(sdx > 0 ? sx + 30 : sx - 36, sy - 3, 6, 6);
+      /* 灯罩 */
+      b.fillStyle = 'rgba(12,14,18,0.94)';
+      b.fillRect(sx - 11, sy - 4, 22, 8);
+      b.fillStyle = 'rgba(62,68,76,0.95)';
+      b.fillRect(sx - 11, sy - 4, 22, 1);
+      b.fillStyle = 'rgba(34,38,44,0.95)';
+      b.fillRect(sx - 11, sy + 3, 22, 1);
+      /* 灯管：亮的时候偏向暖白，暗的时候是一根灰玻璃 */
+      if (lm.fl > 0.06) {
+        b.fillStyle = 'rgba(255,246,218,' + (0.30 + 0.65 * lm.fl).toFixed(3) + ')';
+        b.fillRect(sx - 8, sy - 1, 16, 2);
+        b.fillStyle = 'rgba(255,236,196,' + (0.10 + 0.25 * lm.fl).toFixed(3) + ')';
+        b.fillRect(sx - 9, sy - 2, 18, 1);
+      } else {
+        b.fillStyle = 'rgba(122,132,144,0.22)';
+        b.fillRect(sx - 8, sy - 1, 16, 1);
+        b.fillStyle = 'rgba(8,10,12,0.6)';           // 裂了一道缝
+        b.fillRect(sx - 2, sy - 1, 5, 1);
+      }
+    }
+
+    /* ---- 5. 事故车堆的火：光晕 + 跳动的火苗 + 火星（画在暗层之上才发亮） ---- */
+    var fglow = fireGlow();
+    for (var fj = 0; fj < fires.length; fj++) {
+      var fr = fires[fj];
+      var fx = fr.x - P.camX, fy = fr.y - P.camY;
+      if (fx < -170 || fx > P.VW + 170 || fy < -190 || fy > P.VH + 190) continue;
+      var fl2 = L.fireFlick(run.t, fr.k);
+      b.save();
+      b.globalCompositeOperation = 'lighter';
+      /* 大光晕：把车堆和周围的地面一起照暖 */
+      b.globalAlpha = 0.62 * fl2;
+      b.drawImage(fglow, fx - 132, fy - 128, 264, 256);
+      /* 火苗：三束高矮不一，各自按不同相位跳 */
+      for (var q3 = 0; q3 < 3; q3++) {
+        var ph = run.t * (6.5 + q3 * 1.9) + fr.k * 2.3 + q3 * 2.1;
+        var wob = Math.sin(ph) * (3 + q3);
+        var hgt = 15 + q3 * 7 + Math.sin(ph * 1.4) * 4;
+        var wid = 5.4 - q3 * 0.9;
+        b.fillStyle = q3 === 0 ? 'rgba(255,226,150,0.88)'
+          : (q3 === 1 ? 'rgba(255,156,54,0.72)' : 'rgba(206,64,20,0.58)');
+        b.beginPath();
+        b.ellipse(fx + wob + (q3 - 1) * 2.5, fy - 6 - hgt * 0.45 - q3 * 1.5,
+          wid, hgt * 0.5, 0, 0, U.TAU);
+        b.fill();
+      }
+      /* 火星：不用存状态，相位全靠 hash + 时间 */
+      for (var q4 = 0; q4 < 7; q4++) {
+        var sp = (run.t * 0.6 + U.hash(fr.k, q4, 7781)) % 1;
+        var mx = fx + (U.hash(fr.k, q4, 7783) - 0.5) * 20 + Math.sin(run.t * 3 + q4) * 3;
+        var my = fy - 8 - sp * 52;
+        b.fillStyle = 'rgba(255,' + Math.round(186 - sp * 96) + ',86,' + (0.9 * (1 - sp)).toFixed(3) + ')';
+        b.fillRect(Math.round(mx), Math.round(my), 1.6, 1.6);
+      }
+      b.restore();
+    }
+  };
+
   /* 锈水高速：柏油立交上覆盖浑浊积水。每帧只画可视区，水面反光带轻微流动。 */
   R.drawFlood = function (b, run) {
     if (!run.map.water) return;
@@ -1094,6 +1845,70 @@
       if (g.x < P.camX - 90 || g.x > P.camX + P.VW + 90 ||
           g.y < P.camY - 90 || g.y > P.camY + P.VH + 90) continue;
       var fade = Math.min(1, g.life / 4);
+      /* ---- 斧刃划过的弧裂纹（交叉斩）----
+         和"砸出来的圆坑"是两种东西：这条是顺着刀刃轨迹的一道缝，
+         半径抖动出锯齿，内侧补一道受光边，再挑几处分叉出去。
+         **半径不压扁**（别的贴地装饰会乘 0.62 做透视）：这条弧是判定边界的地面投影，
+         判定本身是正圆（`U.dist < CL_R`），压扁之后弧的上下两头只剩 62% 半径，
+         玩家站在"弧外"却照样被砍到 —— 边界线必须和判定同形。 */
+      if (g.arc) {
+        var a0 = g.ang - g.span / 2;
+        var N2 = 20;
+        /* 抖动只给 ±3%：±7% 的时候每段都是尖角，整条读成拉链/心电图，
+           不像被斧刃划过 —— 刀口是顺的，只该有轻微的起伏 */
+        var jit = function (s3) {
+          return 0.97 + 0.06 * U.hash(Math.round(g.x) + s3 * 5, Math.round(g.y), 617);
+        };
+        b.save();
+        b.globalAlpha = 0.9 * fade;
+        b.lineCap = 'round';
+        var s2, t2, a2, jr, xx, yy;
+        /* 主缝：分三段画，中间实、两头虚，收口才像"划开"而不是"画上去" */
+        b.strokeStyle = 'rgba(16,12,9,0.88)';
+        b.lineWidth = 2.6;
+        b.beginPath();
+        for (s2 = 0; s2 <= N2; s2++) {
+          t2 = s2 / N2;
+          a2 = a0 + g.span * t2;
+          jr = g.r * jit(s2);
+          xx = g.x + Math.cos(a2) * jr;
+          yy = g.y + Math.sin(a2) * jr;
+          if (s2 === 0) b.moveTo(xx, yy); else b.lineTo(xx, yy);
+        }
+        b.stroke();
+        /* 受光边贴在内侧：光从上方来，裂缝朝上那一侧才有反光 */
+        b.strokeStyle = 'rgba(158,140,110,0.30)';
+        b.lineWidth = 1;
+        b.beginPath();
+        for (s2 = 0; s2 <= N2; s2++) {
+          t2 = s2 / N2;
+          a2 = a0 + g.span * t2;
+          jr = g.r * jit(s2) - 2;
+          xx = g.x + Math.cos(a2) * jr;
+          yy = g.y + Math.sin(a2) * jr;
+          if (s2 === 0) b.moveTo(xx, yy); else b.lineTo(xx, yy);
+        }
+        b.stroke();
+        /* 分叉：短、斜、往外偏 —— 四条就够，再多就成蜘蛛网了 */
+        b.strokeStyle = 'rgba(16,12,9,0.46)';
+        b.lineWidth = 1;
+        for (var bk = 0; bk < 4; bk++) {
+          var bt2 = (bk + 0.5) / 4;
+          var ba2 = a0 + g.span * bt2;
+          var brr = g.r * jit(bt2 * N2);
+          var skew = (U.hash(bk, Math.round(g.x), 331) - 0.5) * 0.5;
+          var outR = 7 + 9 * U.hash(bk, Math.round(g.y), 907);
+          b.beginPath();
+          b.moveTo(g.x + Math.cos(ba2) * brr, g.y + Math.sin(ba2) * brr);
+          b.lineTo(
+            g.x + Math.cos(ba2 + skew) * (brr + outR),
+            g.y + Math.sin(ba2 + skew) * (brr + outR)
+          );
+          b.stroke();
+        }
+        b.restore();
+        continue;
+      }
       var r = g.r;
       var seedX = Math.round(g.x), seedY = Math.round(g.y);
       b.save();
@@ -1158,6 +1973,7 @@
 
   R.ground = function (b, theme, cx, cy, vw, vh) {
     if (theme === 'street') { R.street(b, cx, cy, vw, vh); return; }
+    if (theme === 'tunnel') { R.tunnel(b, cx, cy, vw, vh); return; }
     if (theme === 'desert' || theme === 'flood') { R.desert(b, cx, cy, vw, vh); return; }
     var x0 = Math.floor(cx / 48) * 48 - 48;
     var y0 = Math.floor(cy / 48) * 48 - 48;
@@ -1340,10 +2156,16 @@
    * 背景震动幅度。
    * 只在局内（state === 'run'）生效：升级 / 暂停时世界是冻结的，
    * 背景还在抖会让卡面和文字跟着晃，读起来很难受。
+   *
+   * **震屏疲劳**（run.shakeBusy，Game.updateRun 里累加）：屏幕连着抖的时候最多打掉
+   * 六成幅度。自爆尸连环炸的时候，原来每一发都把镜头顶回 6px、抖个不停；
+   * 现在连着炸只会剩下 2px 上下，能看见"在炸"但不晃眼。
+   * 单次爆炸只抖 0.1 秒，疲劳度来不及攒起来，所以一击的手感没变。
    */
   R.shakeAmount = function (g) {
     if (!g || !g.run || g.state !== 'run') return 0;
-    return (g.run.shake || 0) * (P.fxLow ? 0.3 : 1);
+    var v = (g.run.shake || 0) * (1 - 0.6 * (g.run.shakeBusy || 0));
+    return v * (P.fxLow ? 0.3 : 1);
   };
 
   R.world = function (g) {
@@ -1385,7 +2207,11 @@
     if (!P.fxLow) {
       for (i = 0; i < run.decals.length; i++) {
         var dc = run.decals[i];
-        b.fillStyle = 'rgba(26,26,30,' + Math.max(0, dc.a).toFixed(3) + ')';
+        /* 出血留下的那几摊比普通污渍略浅一点点（看起来是"湿的"），
+           但同样是灰黑 —— 全游戏不出现红色血，过审口径统一 */
+        b.fillStyle = dc.blood
+          ? 'rgba(58,58,64,' + Math.max(0, dc.a).toFixed(3) + ')'
+          : 'rgba(26,26,30,' + Math.max(0, dc.a).toFixed(3) + ')';
         b.beginPath();
         b.arc(dc.x, dc.y, dc.r, 0, U.TAU);
         b.fill();
@@ -1437,6 +2263,23 @@
         continue;
       }
 
+      /* 钻核（便携钻头进化）：灰白的旋转钻痕，不是火 */
+      if (pool.core) {
+        var cf = Math.min(1, pool.life / 0.4);
+        var cr2 = pool.r * (1 - 0.15 * (pool.life / pool.max));
+        b.fillStyle = 'rgba(190,205,220,' + (0.10 * cf).toFixed(3) + ')';
+        b.beginPath(); b.arc(pool.x, pool.y, cr2, 0, U.TAU); b.fill();
+        b.strokeStyle = 'rgba(226,236,245,' + (0.35 * cf).toFixed(3) + ')';
+        b.lineWidth = 1.2;
+        for (var ci = 0; ci < 3; ci++) {
+          var ca3 = run.t * 7 + ci * 2.09;
+          b.beginPath();
+          b.arc(pool.x, pool.y, cr2 * (0.55 + ci * 0.15), ca3, ca3 + 1.1);
+          b.stroke();
+        }
+        continue;
+      }
+
       var pt = pool.life / pool.max;
       var pulse = 0.85 + 0.15 * Math.sin(run.t * 11 + i);
       var pr = pool.r * (0.9 + 0.1 * pt) * pulse;
@@ -1478,7 +2321,10 @@
     for (i = 0; i < run.enemies.length; i++) {
       if (!run.enemies[i].dead) list.push(run.enemies[i]);
     }
-    for (i = 0; i < obsBuf.length; i++) list.push(obsBuf[i]);
+    /* 隧道衬砌只做碰撞、不参与绘制（地面层已经画过了） */
+    for (i = 0; i < obsBuf.length; i++) {
+      if (!obsBuf[i].wall) list.push(obsBuf[i]);
+    }
 
     /* 室内可见时，把「地板 + 家具 + 墙」拆成独立的一层先画：
        玩家/僵尸进楼后会压在家具前面，屋顶再在最上层淡出。 */
@@ -1549,12 +2395,84 @@
           b.fillStyle = 'rgba(255,205,140,0.10)';
           b.beginPath(); b.arc(p.x, p.y + 3, 18, 0, U.TAU); b.fill();
         }
+        /* 眩晕（尖啸者的超声）：脚下抖动的圈 + 头顶绕着转的三颗星。
+           没有这一层，玩家只会觉得"我推着摇杆它不动，是不是卡了" */
+        if (p.stun > 0) {
+          var sk2 = Math.min(1, p.stun / (p.stunMax || 0.9));
+          b.strokeStyle = 'rgba(191,233,255,' + (0.35 * sk2 + 0.15).toFixed(3) + ')';
+          b.lineWidth = 1.4;
+          b.beginPath();
+          b.ellipse(p.x, p.y + 6, 13 + Math.sin(run.t * 26) * 1.6, 5, 0, 0, U.TAU);
+          b.stroke();
+          for (var sd2 = 0; sd2 < 3; sd2++) {
+            var sa2 = run.t * 5.2 + sd2 * (U.TAU / 3);
+            var sxx = p.x + Math.cos(sa2) * 8;
+            var syy = p.y - 20 + Math.sin(sa2) * 2.4;
+            b.fillStyle = sd2 === 0 ? '#fff6c4' : 'rgba(255,222,120,0.8)';
+            b.fillRect(Math.round(sxx), Math.round(syy), 2, 2);
+          }
+        }
+
+        /* 蓄能指示（冲击波发生器）：贴地一圈随蓄势向内收束的光环。
+           没有它玩家看不出"我在憋"，只会觉得这件武器时好时坏 */
+        if (p.chargeVis > 0.05) {
+          b.save();
+          if (p.chargeKind === 'rail') {
+            /* 湮灭炮的 3 秒蓄力：三道收束光环 + 八根辐条 + 中心聚能核。
+               它和冲击波发生器共用 p.chargeVis / p.chargeR，但必须一眼分得清 ——
+               一个是要"震出去"，一个是要"打穿一条线"。 */
+            var rk2 = Math.min(1, p.chargeVis / 3);
+            var rR = p.chargeR || 78;
+            b.globalCompositeOperation = 'lighter';
+            b.strokeStyle = '#8ee9ff';
+            for (var ringI = 0; ringI < 3; ringI++) {
+              var rr2 = rR * (1 - ringI * 0.26) * (1.15 - rk2 * 0.5);
+              b.globalAlpha = (0.10 + rk2 * 0.34) * (1 - ringI * 0.22);
+              b.lineWidth = 1 + rk2 * 1.6;
+              b.beginPath(); b.arc(p.x, p.y + 2, rr2, 0, U.TAU); b.stroke();
+            }
+            /* 辐条：朝中心收，转速随蓄力加快 */
+            b.globalAlpha = 0.18 + rk2 * 0.5;
+            b.lineWidth = 1;
+            for (var sp2 = 0; sp2 < 8; sp2++) {
+              var sa2 = sp2 * U.TAU / 8 + run.t * (1.2 + rk2 * 3);
+              var r0 = rR * (1.05 - rk2 * 0.45);
+              b.beginPath();
+              b.moveTo(p.x + Math.cos(sa2) * r0, p.y + 2 + Math.sin(sa2) * r0);
+              b.lineTo(p.x + Math.cos(sa2) * r0 * 0.62, p.y + 2 + Math.sin(sa2) * r0 * 0.62);
+              b.stroke();
+            }
+            /* 聚能核：蓄满前一圈圈放大，最后闪一下 */
+            var coreR = 2 + rk2 * 7 + (rk2 > 0.96 ? Math.sin(run.t * 60) * 1.5 : 0);
+            b.globalAlpha = 0.5 + rk2 * 0.5;
+            b.fillStyle = '#dffaff';
+            b.beginPath(); b.arc(p.x, p.y + 2, coreR, 0, U.TAU); b.fill();
+            b.globalAlpha = 0.22 * rk2;
+            b.fillStyle = '#8ee9ff';
+            b.beginPath(); b.arc(p.x, p.y + 2, coreR * 2.6, 0, U.TAU); b.fill();
+          } else {
+            var ck = Math.min(1, p.chargeVis / 4);
+            var crr = (p.chargeR || 58) * (1.18 - ck * 0.38);
+            b.globalCompositeOperation = 'lighter';
+            b.strokeStyle = '#8ecae6';
+            b.globalAlpha = 0.16 + ck * 0.45;
+            b.lineWidth = 1 + ck * 2;
+            b.beginPath(); b.arc(p.x, p.y + 2, crr, 0, U.TAU); b.stroke();
+            b.globalAlpha = 0.08 + ck * 0.2;
+            b.lineWidth = 1;
+            b.beginPath(); b.arc(p.x, p.y + 2, crr * 0.62, 0, U.TAU); b.stroke();
+          }
+          b.restore();
+          b.globalAlpha = 1;
+        }
         var pAlpha = 1;
         if (p.invuln > 0 && Math.floor(run.t * 18) % 2 === 0) pAlpha = 0.45;
         /* 挨打时整个人被撞得一晃，比单纯闪白更像被咬到 */
         var pJx = p.hurtT > 0 ? Math.sin(p.hurtT * 78) * p.hurtT * 4 : 0;
         var aim = p.aimA || 0;
-        var gunBehind = Math.sin(aim) < -0.25;
+        /* 背面朝上时枪永远画在人前面（她背对我们，枪在她身前 = 我们看得到）；
+           其他朝向朝上瞄时才把枪压到身体后面，做出"手从身侧绕过去"的层次 */
+        var gunBehind = (faceOf(p) !== 'up') && Math.sin(aim) < -0.25;
 
         /* 投掷时上半身跟着拧一下：蓄力往后、出手往前。
            只转 6°，再多就不像"投"而像"摔"了。 */
@@ -1577,18 +2495,55 @@
           lunge -= Math.cos(aim) * p.recoil * 0.9;
         }
 
+        /* 搜刮成功：0.9 秒内原地蹦两下，同时换成开心帧。
+           用 |sin| 做连跳（落地即起跳），最后 0.18s 收力，免得突然停住。
+           蹦的时候 gait 归零 —— 开心帧是"收腿离地"的姿态，不该被切成走路的腿。 */
+        var cheerY = 0, pName = p.sprite, pGait = p.gait;
+        /* 设置里关掉"跟随朝向"就永远用正面那套帧 */
+        var pDir = faceOf(p);
+        if (p.cheerT > 0) {
+          /* 搜刮成功的开心跳：抛物线 + 开心帧 */
+          var cx0 = p.cheerMax - p.cheerT;
+          var fade0 = Math.min(1, p.cheerT / 0.18);
+          cheerY = -Math.abs(Math.sin(cx0 * 9.6)) * 6 * fade0;
+          pName = p.spriteHappy || p.sprite;
+          pGait = 0;
+        } else if (p.gait > 0.06) {
+          /* 行走：p.anim 随移速走（正常速度约 11 rad/s），0.62 的系数让
+             四帧一轮 ≈ 0.58s；被水拖慢时步频自动跟着慢下来 */
+          pName = whaleFrame(pDir, 2 + (Math.floor(p.anim * 0.62) & 3));
+        } else {
+          /* 站着：两帧交替做呼吸（约 1.1s 一次），比完全静止耐看 */
+          pName = whaleFrame(pDir, (Math.floor(run.t * 0.9) & 1) ? 1 : 0);
+        }
+
+        /* 换向的 0.09s 里横向压一下（横向换向才压）：像素小人转身没有中间帧，
+           直接换整套贴图会像"变形"，压一下就读成"扭身"了 */
+        var squashX = 1;
+        if (p.faceTurnT > 0) {
+          squashX = 1 - 0.18 * (p.faceTurnT / 0.09);
+        }
+
         b.globalAlpha = pAlpha;
         if (gunBehind) R.drawGun(b, p, aim);
+        /* 压扁以脚底为轴，不然人会跟着"缩"到地下 */
+        if (squashX !== 1) {
+          b.save();
+          b.translate(p.x + pJx, p.y + 7);
+          b.scale(squashX, 1);
+          b.translate(-(p.x + pJx), -(p.y + 7));
+        }
         if (twist !== 0) {
           b.save();
           b.translate(p.x + pJx, p.y + 4);
           b.rotate(twist);
           b.translate(-(p.x + pJx), -(p.y + 4));
-          R.drawActor(b, p.sprite, p.x + pJx + lunge, p.y, 1, p.anim, p.gait, p.lean, null, 0);
+          R.drawActor(b, pName, p.x + pJx + lunge, p.y + PSPRITE_LIFT + cheerY, 1, p.anim, pGait, p.lean, null, 0);
           b.restore();
         } else {
-          R.drawActor(b, p.sprite, p.x + pJx + lunge, p.y, 1, p.anim, p.gait, p.lean, null, 0);
+          R.drawActor(b, pName, p.x + pJx + lunge, p.y + PSPRITE_LIFT + cheerY, 1, p.anim, pGait, p.lean, null, 0);
         }
+        if (squashX !== 1) b.restore();
         if (!gunBehind) R.drawGun(b, p, aim);
         R.drawThrow(b, p);
         b.globalAlpha = 1;
@@ -1605,6 +2560,10 @@
         /* Boss 单独处理 */
       } else {
         R.drawEnemy(b, it);
+        /* 流血标记：跟着敌人画，和"血珠飞溅"互补（一个是状态，一个是事件） */
+        if (it.bleed > 0) R.drawBleedMark(b, it, run);
+        /* 裂口标记（机械钻头）：亮色钻痕，和暗色血点分开认 */
+        if (it.rift > 0) R.drawRiftMark(b, it, run);
       }
     }
 
@@ -1649,6 +2608,8 @@
            枪口位置和 combat.js 的出弹点完全一致。 */
         if (be.def && be.def.bossType === 'gatling') R.drawBossGatling(b, be, p);
         if (be.def && be.def.bossType === 'axeboss') R.drawBossAxes(b, be, p);
+        if (be.def && be.def.bossType === 'shrieker') R.drawBossShriek(b, be, p);
+        if (be.def && be.def.bossType === 'brood') R.drawBossBrood(b, be, p);
       }
     }
 
@@ -1712,10 +2673,41 @@
         }
         b.restore();
       } else {
-        b.fillStyle = bu.color;
-        b.fillRect(bu.x - bu.r, bu.y - bu.r, bu.r * 2, bu.r * 2);
-        b.fillStyle = 'rgba(255,255,255,0.55)';
-        b.fillRect(bu.x - bu.r * 0.5, bu.y - bu.r * 0.5, bu.r, bu.r);
+        /* 大号弹丸（转管风暴）：光晕 + 亮芯 + 一段曳光。
+           小弹丸还是原来的两点方块 —— 这是"进化之后子弹变大了"唯一的视觉出口 */
+        if (bu.big) {
+          var bax = bu.vx, bay = bu.vy;
+          var bal = Math.sqrt(bax * bax + bay * bay) || 1;
+          bax /= bal; bay /= bal;
+          b.fillStyle = 'rgba(255,170,120,0.16)';
+          b.beginPath(); b.arc(bu.x, bu.y, bu.r * 2.6, 0, U.TAU); b.fill();
+          b.fillStyle = 'rgba(255,120,60,0.30)';
+          b.fillRect(bu.x - bax * bu.r * 3 - bu.r, bu.y - bay * bu.r * 3 - bu.r,
+            bu.r * 2, bu.r * 2);
+          b.fillStyle = bu.color;
+          b.fillRect(bu.x - bu.r, bu.y - bu.r, bu.r * 2, bu.r * 2);
+          b.fillStyle = 'rgba(255,255,255,0.85)';
+          b.fillRect(bu.x - bu.r * 0.6, bu.y - bu.r * 0.6, bu.r * 1.2, bu.r * 1.2);
+          b.fillStyle = '#fff6d0';
+          b.fillRect(bu.x - 0.5, bu.y - 0.5, 1, 1);
+        } else {
+          b.fillStyle = bu.color;
+          b.fillRect(bu.x - bu.r, bu.y - bu.r, bu.r * 2, bu.r * 2);
+          b.fillStyle = 'rgba(255,255,255,0.55)';
+          b.fillRect(bu.x - bu.r * 0.5, bu.y - bu.r * 0.5, bu.r, bu.r);
+          /* 回旋刃拖一小段尾迹：一颗小方块光看样子看不出是"飞出去又收回来"，
+             有尾巴才读得懂去程和回程（也能看清它撞墙后掉头的那一下） */
+          if (bu.boomerang) {
+            var rgl = Math.sqrt(bu.vx * bu.vx + bu.vy * bu.vy) || 1;
+            var rgtx = bu.x - bu.vx / rgl * 7, rgty = bu.y - bu.vy / rgl * 7;
+            b.strokeStyle = 'rgba(233,238,245,0.5)';
+            b.lineWidth = 1.4;
+            b.beginPath();
+            b.moveTo(rgtx, rgty);
+            b.lineTo(bu.x, bu.y);
+            b.stroke();
+          }
+        }
       }
     }
 
@@ -1759,6 +2751,11 @@
       }
     }
 
+    /* 持续光束（红莲切割者 / 熔核过载）：一条一直亮着的激光。
+       它不走下面 chains 那套 0.12s 闪线 —— 12.5Hz 的闪在画面上就是"还在扣扳机"，
+       而这把枪的设定是"一道不断的光"。状态由 updateWeapons 每帧续（p.beamHold）。 */
+    R.drawBeamHold(b, run);
+
     /* 闪电 / 光束 */
     for (i = 0; i < run.chains.length; i++) {
       var ch = run.chains[i];
@@ -1797,6 +2794,7 @@
     /* 末世空气：缓慢飘落的灰烬 / 浮尘 */
     R.drawAtmosphere(b, run);
 
+
     /* 粒子 / 冲击环 */
     for (i = 0; i < run.fx.length; i++) {
       var f = run.fx[i];
@@ -1817,17 +2815,81 @@
       } else if (f.kind === 'slash') {
         /* 近战刀光：一段圆弧，越接近消失越细 */
         var sa = Math.max(0, f.life / f.max);
-        b.globalAlpha = sa * 0.85;
+        if (f.glow) {
+          /* 光剑刀光：不是一条细线，而是"扫过去的一片能量"。
+             用 sa 反推扫过的比例 —— 刃口从起手位置一路划到收手位置，
+             后面拖着填充的余晖，最外层是加色混合的白芯弧。
+             和刀剑那条恒定形状的细弧在观感上是两种东西。 */
+          var swept = 1 - sa;
+          var a0 = f.ang - f.arc / 2;
+          var a1 = a0 + f.arc * (0.15 + 0.85 * swept);
+          b.save();
+          b.globalCompositeOperation = 'lighter';
+          /* 余晖：刀刃扫过的一圈月牙（内圈挖空），不是"手电筒锥形"——
+             从圆心填到外缘会读成一束光，挖掉内侧才像刃口的残影 */
+          b.globalAlpha = sa * 0.20;
+          b.fillStyle = f.color;
+          b.beginPath();
+          b.arc(f.x, f.y, f.r * 0.95, a0, a1);
+          b.arc(f.x, f.y, f.r * 0.52, a1, a0, true);
+          b.closePath();
+          b.fill();
+          /* 外缘光带 */
+          b.strokeStyle = f.color;
+          b.globalAlpha = sa * 0.42;
+          b.lineWidth = 5 * sa + 1.5;
+          b.beginPath(); b.arc(f.x, f.y, f.r * 0.95, a0, a1); b.stroke();
+          /* 白芯：贴着外缘的那条最亮的线 */
+          b.strokeStyle = '#ffffff';
+          b.globalAlpha = sa * 0.95;
+          b.lineWidth = 1.1 + sa * 0.9;
+          b.beginPath(); b.arc(f.x, f.y, f.r * 0.95, a0, a1); b.stroke();
+          /* 刀尖：扫到哪儿亮到哪儿 */
+          b.globalAlpha = sa;
+          b.fillStyle = '#ffffff';
+          b.fillRect(f.x + Math.cos(a1) * f.r * 0.95 - 1.2,
+                     f.y + Math.sin(a1) * f.r * 0.95 - 1.2, 2.4, 2.4);
+          b.restore();
+          b.globalAlpha = 1;
+        } else {
+          b.globalAlpha = sa * 0.85;
+          b.strokeStyle = f.color;
+          b.lineWidth = 1 + sa * 2;
+          b.beginPath();
+          b.arc(f.x, f.y, f.r * 0.82, f.ang - f.arc / 2, f.ang + f.arc / 2);
+          b.stroke();
+          /* 内圈淡影，让刀光有厚度 */
+          b.globalAlpha = sa * 0.3;
+          b.beginPath();
+          b.arc(f.x, f.y, f.r * 0.6, f.ang - f.arc / 2 * 0.8, f.ang + f.arc / 2 * 0.8);
+          b.stroke();
+          b.globalAlpha = 1;
+        }
+      } else if (f.kind === 'punch') {
+        /* 拳套冲击环：从贴身向外扩的一圈弧，越远越淡。
+           拳头的判定是"身前一整圈全吃"，只画刀光弧会读成挥刀。
+           q = 连打层数：层数越高环越亮越粗，读得出"越打越重" */
+        var pk = 1 - Math.max(0, f.life / f.max);
+        var prr = f.r0 + (f.r1 - f.r0) * pk;
+        var pA0 = f.ang - f.arc / 2, pA1 = f.ang + f.arc / 2;
+        var pq = Math.min(5, f.q || 0);
+        b.save();
+        b.globalCompositeOperation = 'lighter';
         b.strokeStyle = f.color;
-        b.lineWidth = 1 + sa * 2;
-        b.beginPath();
-        b.arc(f.x, f.y, f.r * 0.82, f.ang - f.arc / 2, f.ang + f.arc / 2);
-        b.stroke();
-        /* 内圈淡影，让刀光有厚度 */
-        b.globalAlpha = sa * 0.3;
-        b.beginPath();
-        b.arc(f.x, f.y, f.r * 0.6, f.ang - f.arc / 2 * 0.8, f.ang + f.arc / 2 * 0.8);
-        b.stroke();
+        b.globalAlpha = (1 - pk) * (0.55 + pq * 0.07);
+        b.lineWidth = 2.6 - pk * 1.6 + pq * 0.35;
+        b.beginPath(); b.arc(f.x, f.y, prr, pA0, pA1); b.stroke();
+        b.globalAlpha = (1 - pk) * 0.24;
+        b.lineWidth = 1;
+        b.beginPath(); b.arc(f.x, f.y, prr * 0.78, pA0, pA1); b.stroke();
+        if (pq >= 3) {
+          /* 满连打时多一圈白芯，分量感直接翻倍 */
+          b.strokeStyle = '#ffffff';
+          b.globalAlpha = (1 - pk) * 0.5;
+          b.lineWidth = 1.2;
+          b.beginPath(); b.arc(f.x, f.y, prr * 0.92, pA0, pA1); b.stroke();
+        }
+        b.restore();
         b.globalAlpha = 1;
       } else if (f.kind === 'wave') {
         /* 剑气：月牙从刀口向外扩张，越远越淡越细 —— 一眼能看出"飞出去了" */
@@ -1876,8 +2938,10 @@
       var tx = run.texts[i];
       var ta = Math.min(1, tx.life / tx.max * 1.6);
       b.globalAlpha = ta;
-      b.font = (tx.crit ? 'bold 9px' : '7px') + ' "Courier New", monospace';
-      b.fillStyle = tx.hurt ? '#ff5c5c' : (tx.crit ? '#ffd166' : '#ffffff');
+      /* 燃烧 dot 的跳字用小号暖橙：和直伤的白字、暴击的金字一眼分得开，
+         玩家才知道"这只是在烧"，而不是"我打了它一下" */
+      b.font = (tx.crit ? 'bold 9px' : (tx.dot ? '6px' : (tx.big ? 'bold 8px' : '7px'))) + ' "Courier New", monospace';
+      b.fillStyle = tx.hurt ? '#ff5c5c' : (tx.dot ? '#ffa552' : (tx.crit ? '#ffd166' : '#ffffff'));
       b.fillText(tx.txt, tx.x, tx.y);
       b.globalAlpha = 1;
     }
@@ -1886,6 +2950,10 @@
 
     /* 暗角：把视线压到画面中心，夜晚的压迫感主要来自这里 */
     R.drawVignette(b, run);
+    /* 隧道：整条走廊压冷、两侧压黑（墙外不该看得清） */
+    R.drawTunnelDark(b, run);
+    /* 隧道顶灯：压在暗色之上重画，才能一闪一闪地"打穿"黑暗 */
+    R.drawTunnelLamps(b, run);
     /* 夜间地图：只留身边一圈可见，外面交给黑暗 */
     R.drawNight(b, run);
     P.present();
@@ -2108,11 +3176,11 @@
     smg: 'smg',
     rifle: 'rifle', sniper: 'rifle', lmg: 'rifle', minigun: 'minigun',
     shotgun: 'shotgun',
-    launcher: 'launcher', mortar: 'launcher', harpoon: 'launcher',
+    launcher: 'launcher', harpoon: 'launcher',
     bow: 'bow', crossbow: 'bow',
     flamer: 'flamer',
     laser: 'laser', tesla: 'laser', plasma: 'laser', railgun: 'laser',
-    saber: 'blade', katana: 'blade', greatsword: 'blade', twinblades: 'blade',
+    saber: 'saber', katana: 'blade', greatsword: 'blade', twinblades: 'blade',
     scythe: 'blade', knife: 'knife', shortsword: 'blade', glaive: 'blade',
     axe: 'axe', hammer: 'axe',
     spear: 'spear',
@@ -2122,6 +3190,79 @@
     molotov: 'none', grenade: 'none', frost: 'none', beacon: 'none',
     mine: 'none', shockwave: 'none', autoloader: 'none', syringe: 'none',
     drone: 'none'
+  };
+
+  /* ---------------- 持续光束 ---------------- */
+
+  /**
+   * 红莲切割者 / 熔核过载的那一道激光。
+   *
+   * 状态是 `p.beamHold`（`updateWeapons` 每帧续满、没目标就淡出），
+   * 所以它是**一直亮着的一条**，而不是每 0.08 秒闪一次的短线：
+   * 以前 12.5Hz 的闪烁读起来就是"还在扣扳机"，和"持续灼烧"的设定相反。
+   *
+   * 画三层：外晕 → 主体 → 白芯，宽度跟判定走（`w` 是半宽，和 chains 同一口径），
+   * 再加一点点呼吸，免得粗激光看起来像贴上去的一条色带。
+   */
+  R.drawBeamHold = function (b, run) {
+    var p = run.p, h = p && p.beamHold;
+    if (!h || h.life <= 0) return;
+    var a = Math.min(1, h.life / (h.max || 0.16));
+    /* 枪口在身体中段偏上：和 held 武器的位置对得上 */
+    var x0 = p.x, y0 = p.y - 3;
+    var x1 = x0 + Math.cos(h.ang) * h.len;
+    var y1 = y0 + Math.sin(h.ang) * h.len;
+    var lw = Math.max(3, (h.w || 6) * 0.62);
+    var puls = 1 + Math.sin(run.t * 26) * 0.05;
+    var col = h.color || '#ff3b30';
+    /* 湮灭炮的余辉：宽度随着淡出继续往外扩，像冲击波推出去的那一层 */
+    if (h.rail) {
+      var grow = 1 + (1 - a) * 0.55;
+      lw *= grow;
+      puls = 1 + Math.sin(run.t * 40) * 0.04;
+    }
+
+    b.save();
+    b.lineCap = 'round';
+    /* 外晕：把"这道光有多粗"读出来 */
+    b.strokeStyle = U.rgba(col, 0.13 * a);
+    b.lineWidth = lw * 3.4 * puls;
+    b.beginPath(); b.moveTo(x0, y0); b.lineTo(x1, y1); b.stroke();
+    b.strokeStyle = U.rgba(col, 0.30 * a);
+    b.lineWidth = lw * 1.9 * puls;
+    b.beginPath(); b.moveTo(x0, y0); b.lineTo(x1, y1); b.stroke();
+    /* 主体 */
+    b.strokeStyle = U.rgba(col, 0.92 * a);
+    b.lineWidth = lw * puls;
+    b.beginPath(); b.moveTo(x0, y0); b.lineTo(x1, y1); b.stroke();
+    /* 白芯：烧到发白的那条线，比主体细一半；湮灭炮的巨粗光柱芯要更实 */
+    b.strokeStyle = 'rgba(255,248,244,' + (0.85 * a).toFixed(2) + ')';
+    b.lineWidth = Math.max(1.4, lw * (h.rail ? 0.5 : 0.34));
+    b.beginPath(); b.moveTo(x0, y0); b.lineTo(x1, y1); b.stroke();
+    /* 湮灭炮：光柱两侧各带一条被"拉出来"的电弧，巨粗但不糊成一块色带 */
+    if (h.rail) {
+      var off = lw * 1.25;
+      var nx = -Math.sin(h.ang) * off, ny = Math.cos(h.ang) * off;
+      b.strokeStyle = 'rgba(150,240,255,' + (0.5 * a).toFixed(2) + ')';
+      b.lineWidth = 1.6;
+      for (var sd = -1; sd <= 1; sd += 2) {
+        b.beginPath();
+        for (var t2 = 0; t2 <= 10; t2++) {
+          var tt = t2 / 10;
+          var jitter = (U.hash(t2 * 7 + (sd > 0 ? 3 : 0), Math.round(run.t * 30), 913) - 0.5) * lw * 0.5;
+          var px2 = x0 + (x1 - x0) * tt + nx * sd + (x1 - x0) * 0 + jitter * 0.3;
+          var py2 = y0 + (y1 - y0) * tt + ny * sd + jitter;
+          if (t2 === 0) b.moveTo(px2, py2); else b.lineTo(px2, py2);
+        }
+        b.stroke();
+      }
+    }
+    /* 枪口汇聚点：一条没有源头的线会像"从屏幕外射进来的" */
+    b.fillStyle = U.rgba(col, 0.5 * a);
+    b.beginPath(); b.arc(x0, y0, lw * 1.5, 0, U.TAU); b.fill();
+    b.fillStyle = 'rgba(255,255,255,' + (0.9 * a).toFixed(2) + ')';
+    b.beginPath(); b.arc(x0, y0, Math.max(1.2, lw * 0.45), 0, U.TAU); b.fill();
+    b.restore();
   };
 
   /* ---------------- 自动装备 ---------------- */
@@ -2303,7 +3444,12 @@
       }
     }
 
-    if (!p.autos || !p.autos.length) return;
+    /* 挂在人身上的自动装备（跟随 / 环绕 / 环带 / 支援）在驾驶时全部收起。
+       `Auto.update` 早就不跑了（伤害确实停了），但以前照样画 —— 于是光剑环、
+       电球、火环会跟着车跑一圈，看着像还在输出，实际一下都不打。
+       已经落地的装置（上面那圈 run.devices：炮塔 / 地雷 / 区域）不受影响：
+       它们是真的还在工作，也必须一直看得见。 */
+    if (!p.autos || !p.autos.length || p.veh) return;
 
     for (i = 0; i < p.autos.length; i++) {
       a = p.autos[i];
@@ -2433,17 +3579,67 @@
           b.restore();
         }
       } else if (def.kind === 'ring') {
+        /* 踩在脚下的环带。火焰环和冰霜环是同一个 kind，靠 def.color 分家：
+           火是橙、环上窜火星；冰是冷蓝、环上钉冰晶 + 一圈贴地的霜气。
+           以前两者共用一组颜色（连图标都映射到同一个不存在的 'ring'），
+           在场上根本认不出哪个是冰。
+           **两环半径只差 4px、会同时挂在身上**，所以光换色相不够：
+           环上"长什么"必须一眼不同 —— 火星是往上窜的橙点，冰晶是钉死在
+           环上、静止反光的白十字。 */
         var rr = st.radius * p.areaMul;
         var ph = Math.sin(run.t * 4 + i) * 2;
-        b.strokeStyle = U.rgba(def.color || '#ff8b3d', 0.35);
-        b.lineWidth = 2 + Math.sin(run.t * 3) * 1;
-        b.beginPath();
-        b.arc(p.x, p.y, rr + ph * 0.2, 0, U.TAU);
-        b.stroke();
-        b.fillStyle = U.rgba(def.color || '#ff8b3d', 0.05);
+        var isIce = !!(def.tags && def.tags.indexOf('ice') >= 0);
+        var rc = def.color || '#ff8b3d';
+        var rk, ka, kx, ky, fa, lift;
+        b.fillStyle = U.rgba(rc, isIce ? 0.13 : 0.07);
         b.beginPath();
         b.arc(p.x, p.y, rr, 0, U.TAU);
         b.fill();
+        /* 霜气：贴着地面的一圈粗而极淡的冷光，像冷气沉在脚边。
+           火焰不加这一层 —— 火是往上走的，冰才往四周铺。 */
+        if (isIce) {
+          b.strokeStyle = 'rgba(205,238,255,0.10)';
+          b.lineWidth = 7;
+          b.beginPath();
+          b.arc(p.x, p.y, rr + 1, 0, U.TAU);
+          b.stroke();
+        }
+        b.strokeStyle = U.rgba(rc, isIce ? 0.80 : 0.42);
+        b.lineWidth = isIce ? 2.6 : 2 + Math.sin(run.t * 3) * 1;
+        b.beginPath();
+        b.arc(p.x, p.y, rr + ph * 0.2, 0, U.TAU);
+        b.stroke();
+        b.strokeStyle = U.rgba(rc, isIce ? 0.34 : 0.16);
+        b.lineWidth = 1;
+        b.beginPath();
+        b.arc(p.x, p.y, rr - 3.5, 0, U.TAU);
+        b.stroke();
+        if (isIce) {
+          /* 冰晶：八颗白十字钉在环上缓慢绕行，中心一格高光。
+             原来是 2px 的十字 —— 等距看只是几个白点，读不出"冰"。 */
+          for (rk = 0; rk < 8; rk++) {
+            ka = run.t * 0.45 + rk * (U.TAU / 8);
+            kx = Math.round(p.x + Math.cos(ka) * rr);
+            ky = Math.round(p.y + Math.sin(ka) * rr);
+            b.fillStyle = 'rgba(150,215,255,0.62)';
+            b.fillRect(kx - 2, ky, 5, 1);
+            b.fillRect(kx, ky - 2, 1, 5);
+            b.fillStyle = 'rgba(214,242,255,0.92)';
+            b.fillRect(kx - 1, ky - 1, 3, 3);
+            b.fillStyle = 'rgba(255,255,255,0.95)';
+            b.fillRect(kx, ky, 1, 1);
+          }
+        } else {
+          /* 火星：沿着环往上窜，窜得越高越暗 */
+          for (rk = 0; rk < 8; rk++) {
+            fa = run.t * 1.1 + rk * (U.TAU / 8);
+            lift = (run.t * 9 + rk * 5) % 7;
+            b.fillStyle = 'rgba(255,' + Math.round(200 - lift * 12) + ',90,' +
+              (0.78 - lift * 0.08).toFixed(2) + ')';
+            b.fillRect(Math.round(p.x + Math.cos(fa) * rr),
+              Math.round(p.y + Math.sin(fa) * rr - lift), 2, 2);
+          }
+        }
       } else if (def.kind === 'support') {
         var sa = run.t * 1.2 + i;
         var sx = p.x + Math.cos(sa) * 14;
@@ -2475,6 +3671,161 @@
    * 枪口 = 身体中心 + 瞄准方向 17px，和 combat.js 里生成弹幕的位置对齐；
    * 六根转管用 sin 上下摆动模拟旋转，过热时整根烧成暗红、枪口不再闪。
    */
+  /**
+   * 尖啸者：超声的扇形预警 + 喉咙口的收束光环。
+   *
+   * 超声是这张图唯一夺走操作权的招式，所以它必须"看得见"：
+   * 蓄力 0.85 秒里，地面上会有一片 ±30° 的冷蓝扇区，
+   * 边界线随蓄力收紧 —— 玩家读的是"我是不是站在这片扇区里"。
+   */
+  R.drawBossShriek = function (b, e, p) {
+    var a = e.hAng === undefined ? Math.atan2(p.y - e.y, p.x - e.x) : e.hAng;
+    var i, t = R._t || 0;
+    if (e.hSt === 1) {
+      /* 短啸蓄声：**全向**了，就别再画扇形 —— 扇形会让玩家以为"绕背后有用"。
+         改成三圈往里收的声压环：收完就炸开，方向不重要，距离才重要。 */
+      var k = 1 - Math.min(1, Math.max(0, e.hT / 0.55));
+      for (i = 0; i < 3; i++) {
+        var r1 = 26 + i * 10 - k * 18;
+        if (r1 < 4) r1 = 4;
+        b.strokeStyle = 'rgba(178,236,255,' + (0.10 + 0.30 * k * (1 - i * 0.22)).toFixed(3) + ')';
+        b.lineWidth = 1.2;
+        b.beginPath();
+        b.arc(e.x, e.y - 4, r1, 0, U.TAU);
+        b.stroke();
+      }
+      /* 射程提示：一圈很淡的外环，告诉玩家"这个距离以内都会吃" */
+      b.strokeStyle = 'rgba(150,220,250,' + (0.05 + 0.10 * k).toFixed(3) + ')';
+      b.lineWidth = 1;
+      b.beginPath();
+      b.arc(e.x, e.y - 4, 250, 0, U.TAU);
+      b.stroke();
+      /* 喉咙口：三圈往回收的光 */
+      for (i = 0; i < 3; i++) {
+        var rr = (e.r + 3) + (1 - k) * 11 + i * 4;
+        b.strokeStyle = 'rgba(200,240,255,' + (0.45 * k * (1 - i * 0.25)).toFixed(3) + ')';
+        b.lineWidth = 1;
+        b.beginPath();
+        b.arc(e.x + Math.cos(a) * 3, e.y - 7 + Math.sin(a) * 3, rr, 0, U.TAU);
+        b.stroke();
+      }
+    } else if (e.hSt === 3) {
+      /* 骨爪：一道收得很紧的白弧，和超声的冷蓝区分开 */
+      var ck2 = 1 - Math.max(0, e.hT) / 0.34;
+      b.strokeStyle = 'rgba(230,240,255,' + (0.30 + 0.4 * ck2).toFixed(3) + ')';
+      b.lineWidth = 2;
+      b.beginPath();
+      b.arc(e.x, e.y - 2, 40 + ck2 * 20, a - 0.9, a + 0.9);
+      b.stroke();
+    } else if (e.hSt === 5) {
+      /* 长啸：起手是"吸气"（环往里收），持续段是一串往外推的声压环。
+         持续段每 0.32s 一拍，画面上的环也是每拍推一次 —— 玩家能数着拍子找车躲 */
+      var wind = e.hT > 0;
+      if (wind) {
+        var wk = 1 - Math.max(0, e.hT) / 0.5;
+        for (i = 0; i < 4; i++) {
+          var wr = 96 - i * 16 - wk * 26;
+          if (wr < 6) wr = 6;
+          b.strokeStyle = 'rgba(190,240,255,' + (0.08 + 0.22 * wk).toFixed(3) + ')';
+          b.lineWidth = 1.4;
+          b.beginPath();
+          b.arc(e.x, e.y - 4, wr, 0, U.TAU);
+          b.stroke();
+        }
+      } else {
+        for (i = 0; i < 3; i++) {
+          var phase = ((t * 2.4 + i * 0.33) % 1);
+          var cr = 16 + phase * 210;
+          b.strokeStyle = 'rgba(186,238,255,' + (0.30 * (1 - phase)).toFixed(3) + ')';
+          b.lineWidth = 1.6;
+          b.beginPath();
+          b.arc(e.x, e.y - 4, cr, 0, U.TAU);
+          b.stroke();
+        }
+        /* 一圈贴身的强光：这是"我正在喊"的状态灯 */
+        b.save();
+        b.globalCompositeOperation = 'lighter';
+        b.fillStyle = 'rgba(150,226,255,0.10)';
+        b.beginPath();
+        b.ellipse(e.x, e.y - 4, e.r * 2.2, e.r * 1.8, 0, 0, U.TAU);
+        b.fill();
+        b.restore();
+      }
+    }
+    /* 蓄声 / 长啸时喉咙里那一点冷光 */
+    if (e.hSt === 1 || e.hSt === 2 || e.hSt === 5) {
+      b.fillStyle = 'rgba(143,232,255,0.55)';
+      b.fillRect(Math.round(e.x - 2), Math.round(e.y - e.r * 1.45), 4, 3);
+    }
+  };
+
+  /**
+   * 育母：育囊的呼吸光 + 产崽前的搏动 + 囊撞的落点预警。
+   * 它的"动作"全在肚子上，所以这三样都画在那颗肚子上。
+   */
+  R.drawBossBrood = function (b, e, p) {
+    var t = R._t || 0;
+    var wind = e.bSt === 1;
+    var k = wind ? 1 - Math.max(0, e.bT) / 0.9 : 0;
+    var pulse = 0.5 + 0.5 * Math.sin(t * (wind ? 13 : 3.4) + (e.seed || 0));
+    var cy2 = e.y + e.r * 0.06;
+    var rr = e.r * (0.62 + 0.10 * pulse + (wind ? 0.20 * k : 0));
+
+    b.save();
+    b.globalCompositeOperation = 'lighter';
+    b.fillStyle = 'rgba(163,214,110,' + (0.05 + 0.05 * pulse).toFixed(3) + ')';
+    b.beginPath(); b.ellipse(e.x, cy2, rr * 1.5, rr * 1.15, 0, 0, U.TAU); b.fill();
+    b.fillStyle = 'rgba(227,214,126,' + (0.09 + 0.09 * pulse + (wind ? 0.10 * k : 0)).toFixed(3) + ')';
+    b.beginPath(); b.ellipse(e.x, cy2, rr, rr * 0.72, 0, 0, U.TAU); b.fill();
+    b.restore();
+
+    /* 产崽瞬间：肚子上裂开的那道缝亮一下（就是"它们从这儿出来"） */
+    if (wind) {
+      b.strokeStyle = 'rgba(246,242,190,' + (0.25 + 0.5 * k).toFixed(3) + ')';
+      b.lineWidth = 1;
+      b.beginPath();
+      b.moveTo(e.x, cy2 - rr * 0.8);
+      b.lineTo(e.x + Math.sin(k * 9) * 2, cy2 + rr * 0.85);
+      b.stroke();
+    }
+    /* 囊撞：脚下那片扇区 */
+    if (e.bSt === 3) {
+      var sk3 = 1 - Math.max(0, e.bT) / 0.45;
+      var ba3 = e.bAng === undefined ? Math.atan2(p.y - e.y, p.x - e.x) : e.bAng;
+      b.fillStyle = 'rgba(227,214,126,' + (0.07 + 0.12 * sk3).toFixed(3) + ')';
+      b.beginPath();
+      b.moveTo(e.x, e.y + 2);
+      b.arc(e.x, e.y + 2, 62, ba3 - 1.05, ba3 + 1.05);
+      b.closePath();
+      b.fill();
+      b.strokeStyle = 'rgba(240,232,170,' + (0.30 + 0.4 * sk3).toFixed(3) + ')';
+      b.lineWidth = 1;
+      b.beginPath(); b.arc(e.x, e.y + 2, 60, ba3 - 1.05, ba3 + 1.05); b.stroke();
+    }
+    /* 抓投：先是一只"手"往身边的弹药伸过去，再顺着投掷方向甩出去。
+       两段各画一道弧 —— 动作本身要看得出来，否则玩家只觉得"天上掉下来一只" */
+    if (e.bSt === 5 || e.bSt === 6) {
+      var ta = e.bAng === undefined ? Math.atan2(p.y - e.y, p.x - e.x) : e.bAng;
+      var tk = e.bSt === 5 ? 1 - Math.max(0, e.bT) / 0.5 : 1;
+      var vx2 = e.bVictim && !e.bVictim.dead ? e.bVictim.x : e.x;
+      var vy2 = e.bVictim && !e.bVictim.dead ? e.bVictim.y : e.y;
+      b.strokeStyle = 'rgba(214,196,140,' + (0.30 + 0.35 * tk).toFixed(3) + ')';
+      b.lineWidth = 2;
+      b.beginPath();
+      if (e.bSt === 5) {
+        /* 抓：从育母往弹药伸的一条弧 */
+        b.moveTo(e.x, e.y + 2);
+        b.quadraticCurveTo((e.x + vx2) / 2, (e.y + vy2) / 2 - 14, vx2, vy2);
+      } else {
+        /* 甩：朝投掷方向的一段上扬弧线 */
+        b.moveTo(e.x, e.y + 2);
+        b.quadraticCurveTo(e.x + Math.cos(ta) * 26, e.y + Math.sin(ta) * 26 - 22,
+          e.x + Math.cos(ta) * 46, e.y + Math.sin(ta) * 46 - 6);
+      }
+      b.stroke();
+    }
+  };
+
   R.drawBossGatling = function (b, e, p) {
     var a = (e.gAim === undefined) ? Math.atan2(p.y - e.y, p.x - e.x) : e.gAim;
     var spin = e.spinA || 0;
@@ -2620,9 +3971,12 @@
     var rec = p.recoil || 0;
     var sway = Math.sin(p.anim) * 0.5 * (p.gait || 0);
     var ca = Math.cos(a), sa = Math.sin(a);
-    var side = (ca >= 0 ? 1 : -1) * 1.9;
+    /* 手的位置跟朝向走：侧身时枪在面朝那一侧的手上，正面/背面看瞄准方向 */
+    var fdir = faceOf(p);
+    var anc = GUN_ANCHOR[fdir] || GUN_ANCHOR.dn;
+    var side = (fdir === 'lf' || fdir === 'rt') ? anc.side : (ca >= 0 ? 1 : -1) * anc.side;
     var hx = p.x + side + ca * (1.8 - rec * 1.4) - sa * sway;
-    var hy = p.y + 1.9 + sa * (1.6 - rec * 1.2) + ca * sway;
+    var hy = p.y + anc.y + sa * (1.6 - rec * 1.2) + ca * sway;
 
     b.save();
     b.translate(snap(hx), snap(hy));
@@ -2681,10 +4035,14 @@
       b.beginPath(); b.moveTo(4.5, -4.4); b.lineTo(4.5, 4.4); b.stroke();
       b.fillStyle = '#e8b98d'; b.fillRect(-2, 1, 2, 2);
     } else if (kind === 'flamer') {
+      /* 喷火和液氮共用同一套 art，靠 elem 换配色：火焰是军绿 + 深色油罐，
+         液氮是冷蓝灰 + 浅蓝冷媒罐 —— 手上这把是什么，不看喷出来的颜色也知道 */
       len = 8;
-      b.fillStyle = '#4a4a3a'; b.fillRect(0, -1, 8, 3);
-      b.fillStyle = '#7d7d5e'; b.fillRect(1, -1, 6, 1);
-      b.fillStyle = '#2a2a20'; b.fillRect(4, 2, 4, 2);
+      var fmIce = def.elem === 'ice';
+      b.fillStyle = fmIce ? '#39434e' : '#4a4a3a'; b.fillRect(0, -1, 8, 3);
+      b.fillStyle = fmIce ? '#8fb6cc' : '#7d7d5e'; b.fillRect(1, -1, 6, 1);
+      b.fillStyle = fmIce ? '#9ad0ff' : '#2a2a20'; b.fillRect(4, 2, 4, 2);
+      b.fillStyle = fmIce ? '#e8f7ff' : '#ffb045'; b.fillRect(7, -1, 1, 2);
       b.fillStyle = '#e8b98d'; b.fillRect(-2, 1, 2, 2);
     } else if (kind === 'laser') {
       len = 10;
@@ -2697,6 +4055,30 @@
       b.fillStyle = '#2b2f36'; b.fillRect(-2, 1, 4, 2);
       b.fillStyle = def.color; b.fillRect(0, -0.6, 10, 1.2);
       b.fillStyle = 'rgba(255,255,255,0.7)'; b.fillRect(1, -0.6, 8, 0.6);
+      b.fillStyle = '#e8b98d'; b.fillRect(-2, 2, 2, 2);
+    } else if (kind === 'saber') {
+      /* 光剑：握把 + 一段"发光的能量刃"，不能和刀剑一样画成一根细金属条。
+         刃身分三层：外晕（lighter 叠加）/ 本体 / 纯白内芯，再叠一点呼吸脉动，
+         远看是一道光，近看能分辨剑柄和刃口 —— 和武士刀的实心灰刃完全不同。
+         刃长跟基础射程挂钩：巨型光剑比光剑长一截，握在手上就能看出来。 */
+      var sabLn = 9 + (def.base.range || 36) * 0.09;
+      var pulse = 0.86 + 0.14 * Math.sin((p.anim || 0) * 7.5);
+      len = sabLn;
+      b.fillStyle = '#20252b'; b.fillRect(-3, 0.5, 5, 3);          // 握把
+      b.fillStyle = '#9aa6b4'; b.fillRect(-1, -1.4, 2, 4.4);       // 发射口
+      b.fillStyle = def.color; b.fillRect(-2.5, 2.5, 4, 1);        // 握把上的按钮
+      b.save();
+      b.globalCompositeOperation = 'lighter';
+      b.globalAlpha = 0.34 * pulse;
+      b.fillStyle = def.color; b.fillRect(0.5, -4.2, sabLn, 8.4);   // 外晕
+      b.globalAlpha = 0.72 * pulse;
+      b.fillRect(0.6, -1.9, sabLn - 0.2, 3.8);                      // 刃身
+      b.globalAlpha = 0.9;
+      b.fillStyle = '#ffffff';
+      b.fillRect(1.4, -0.5, sabLn - 1.2, 1.0);                      // 白芯（细，才透得出青色）
+      b.globalAlpha = 1;
+      b.globalCompositeOperation = 'source-over';
+      b.restore();
       b.fillStyle = '#e8b98d'; b.fillRect(-2, 2, 2, 2);
     } else if (kind === 'knife') {
       len = 6;
@@ -2754,10 +4136,42 @@
       b.fillStyle = '#e8b98d'; b.fillRect(-1, 2, 2, 2);
     }
 
-    /* 枪口焰：只有枪械才有 */
-    if (p.fireT > 0 && kind !== 'blade' && kind !== 'knife' && kind !== 'axe' &&
-        kind !== 'spear' && kind !== 'saw' && kind !== 'fist' && kind !== 'drill' &&
-        kind !== 'shield' && kind !== 'whip' && kind !== 'baton') {
+    /* 枪口特效。枪械是"两点黄火花 + 一小块白光"，喷火 / 液氮不能沿用这一套 ——
+       拿着一根喷管却和步枪一样闪两下黄火花，读起来就是"在开枪"。 */
+    if (kind === 'flamer') {
+      /* 喷火器 / 液氮喷枪：从喷嘴泼出去一小股，颜色和地面光锥同源
+         （fire 橙黄 / ice 冰蓝），长度随 coneT 呼吸 —— 停火即收，不会留着亮。
+         尺寸只到几像素，大面积留给 R.drawFlameCone，两层才不会互相盖糊。 */
+      if (p.coneT > 0.02) {
+        var jice = def.elem === 'ice';
+        var jk = Math.min(1, p.coneT / 0.2);
+        var jl = 4 + 6 * jk + Math.sin((p.anim || 0) * 26) * 1.2;
+        var jc0 = jice ? '#eafaff' : '#fff6cd';
+        var jc1 = jice ? '#9fdcf7' : '#ffc255';
+        var jc2 = jice ? '#5fa8dd' : '#ff6a2a';
+        b.save();
+        b.globalCompositeOperation = 'lighter';
+        b.fillStyle = jc0;
+        b.globalAlpha = 0.85 * jk;
+        b.fillRect(len - 0.5, -1.1, 2.4, 2.2);
+        b.fillStyle = jc1;
+        b.globalAlpha = 0.5 * jk;
+        b.beginPath();
+        b.moveTo(len, -1.6); b.lineTo(len + jl, -3.4 * jk);
+        b.lineTo(len + jl, 3.4 * jk); b.lineTo(len, 1.6);
+        b.closePath(); b.fill();
+        b.fillStyle = jc2;
+        b.globalAlpha = 0.3 * jk;
+        b.beginPath();
+        b.moveTo(len + 1, -1.2); b.lineTo(len + jl * 1.7, -1.9 * jk);
+        b.lineTo(len + jl * 1.7, 1.9 * jk); b.lineTo(len + 1, 1.2);
+        b.closePath(); b.fill();
+        b.restore();
+        b.globalAlpha = 1;
+      }
+    } else if (p.fireT > 0 && kind !== 'blade' && kind !== 'saber' && kind !== 'knife' &&
+        kind !== 'axe' && kind !== 'spear' && kind !== 'saw' && kind !== 'fist' &&
+        kind !== 'drill' && kind !== 'shield' && kind !== 'whip' && kind !== 'baton') {
       var f = Math.min(1, p.fireT / 0.07);
       b.globalAlpha = (f * 0.95).toFixed(2);
       b.fillStyle = '#fff3c4';
@@ -3012,6 +4426,47 @@
     b.restore();
   };
 
+  /**
+   * 流血标记：挂在目标身上的暗色血点，层数越多点越多。
+   *
+   * 光靠"溅出去的血珠"读不出"这只还在流血"—— 血珠 0.3 秒就没了，
+   * 而流血要持续 3 秒。这个标记是**状态**，溅血是**事件**，两者都要有。
+   * 位置用 uid + 时间量化算，不会每帧乱跳（乱跳会像噪点），但会慢慢往下淌。
+   * 颜色走灰黑（见 combat.js 的 Game.bleed），不带红。
+   */
+  R.drawBleedMark = function (b, e, run) {
+    if (!(e.bleed > 0)) return;
+    var st = Math.min(4, e.bleedStacks || 1);
+    var step = ((run.t * 5 + e.uid * 0.37) | 0) % 3;
+    for (var i = 0; i < st; i++) {
+      var k = (e.uid * 13 + i * 37 + step * 5) % 11;
+      var ox = ((k % 5) - 2) * (e.r * 0.34);
+      var oy = -e.r * 0.35 + (k % 4) * (e.r * 0.38) + step * 0.6;
+      b.fillStyle = i === 0 ? '#8a9099' : '#33343a';
+      b.fillRect(Math.round(e.x + ox), Math.round(e.y + oy), 1, i === 0 ? 2 : 1);
+    }
+  };
+
+  /**
+   * 裂口标记（机械钻头）：身上两三道发白的钻痕，层数越多划痕越多。
+   * 和出血点是两套东西：出血是暗色渗血，裂口是亮色机械创口，一眼能分开。
+   */
+  R.drawRiftMark = function (b, e, run) {
+    if (!(e.rift > 0)) return;
+    var n = Math.min(3, e.rift);
+    var jit = Math.sin(run.t * 9 + e.uid) * 0.6;
+    b.strokeStyle = 'rgba(226,236,245,0.7)';
+    b.lineWidth = 1;
+    for (var i = 0; i < n; i++) {
+      var ox = (i - (n - 1) / 2) * 2.2;
+      var oy = -e.r * 0.2 + i * 1.8 + jit;
+      b.beginPath();
+      b.moveTo(e.x + ox - 1.5, e.y + oy - 2);
+      b.lineTo(e.x + ox + 1.5, e.y + oy + 2);
+      b.stroke();
+    }
+  };
+
   R.drawEnemy = function (b, e) {
     if (e.boss) return;          // Boss 单独处理
     /* 屏幕外的不画，后期上百只时省下大量绘制 */
@@ -3021,6 +4476,31 @@
       /* 楼顶上的丧尸：影子要画在屋顶表面 */
       b.fillStyle = 'rgba(0,0,0,0.30)';
       b.fillRect(Math.round(e.x - e.r * 0.8), Math.round(e.y + e.r * 0.8), Math.round(e.r * 1.6), 2);
+    }
+
+    /* ---- 水鬼出水保护 ----
+       浮出水面后 0.35 秒打不中（combat.js 的 emergeGuard）。这一拍**必须画出来**：
+       否则玩家只会觉得"我这几枪丢了"，而不是"它现在打不到"。
+       画在精灵下面，所以读起来是一层裹住身体的水膜，而不是一圈飘在远处的光环。 */
+    if (e.emergeGuard > 0) {
+      var gw = Math.min(1, e.emergeGuard / (e.def.emergeGuard || 0.35));
+      var gr = e.r * (1.55 + 0.45 * (1 - gw));
+      b.fillStyle = 'rgba(118,212,202,' + (0.34 * gw).toFixed(2) + ')';
+      b.beginPath();
+      b.ellipse(e.x, e.y - 2, gr, gr * 1.12, 0, 0, U.TAU);
+      b.fill();
+      b.strokeStyle = 'rgba(196,246,238,' + (0.82 * gw).toFixed(2) + ')';
+      b.lineWidth = 1.6;
+      b.beginPath();
+      b.ellipse(e.x, e.y - 2, gr, gr * 1.12, 0, 0, U.TAU);
+      b.stroke();
+      /* 外面再套一圈更淡的扩散波：单圈在深绿水面上对比度太低，
+         加一层才像"刚从水里顶出来"，而不是一颗发光球 */
+      b.strokeStyle = 'rgba(150,228,216,' + (0.36 * gw).toFixed(2) + ')';
+      b.lineWidth = 1;
+      b.beginPath();
+      b.ellipse(e.x, e.y - 2, gr + 3.5, (gr + 3.5) * 1.12, 0, 0, U.TAU);
+      b.stroke();
     }
 
     /* ---- 攻击动作细节 ----
@@ -3079,6 +4559,22 @@
       return;
     }
 
+    /* 被育母扔出去的自爆尸：地上留一道影子，身体按抛物线抬起来、翻滚 */
+    if (e.hurlT > 0) {
+      var hh = e.hurlH || 0;
+      b.fillStyle = 'rgba(0,0,0,0.32)';
+      b.beginPath();
+      b.ellipse(e.x, e.y + 3, e.r * 1.05, e.r * 0.42, 0, 0, U.TAU);
+      b.fill();
+      b.save();
+      b.translate(e.x, e.y - hh);
+      b.rotate((e.hurlSpin || 0) % U.TAU);
+      R.drawActor(b, e.spriteName, 0, 0, e.scale, e.anim, 0, 0,
+        e.hitSprite, Math.min(0.45, e.flash * 0.65));
+      b.restore();
+      return;
+    }
+
     var esc = e.scale, ey2 = e.y;
     if (e.def.pounce && e.pounceState === 1) {
       var pw2 = Math.max(0, e.pounceWind / 0.5);
@@ -3134,8 +4630,61 @@
       return;
     }
 
-    R.drawActor(b, e.spriteName, e.x, ey2, esc, e.anim, e.gait,
-      e.lean, e.hitSprite, Math.min(0.45, e.flash * 0.65));
+    /* 自爆尸：肚囊透出的荧光。脉冲频率跟着残血走 ——
+       越接近被你打炸，它跳得越急，这是唯一的"要炸了"预告。 */
+    if (e.def && e.def.bomber) {
+      var bRage = 1 - Math.max(0, e.hp / e.maxHp);
+      var bPulse = 0.5 + 0.5 * Math.sin(e.anim * (4 + bRage * 7) + e.seed);
+      var bRad = e.r * (1.9 + 0.35 * bPulse);
+      /* 光晕用一张 64x64 的径向渐变贴图缩放，不要用几个实心圆叠 ——
+         实心圆的边缘是一条硬边，远看像"脚下放了个绿盘子" */
+      if (!R._bombGlow) {
+        var gsz = 64;
+        R._bombGlow = P.createCanvas(gsz, gsz);
+        var gcx = R._bombGlow.getContext('2d');
+        var gg = gcx.createRadialGradient(gsz / 2, gsz / 2, 1, gsz / 2, gsz / 2, gsz / 2);
+        gg.addColorStop(0, 'rgba(236,255,140,0.62)');
+        gg.addColorStop(0.38, 'rgba(196,236,90,0.26)');
+        gg.addColorStop(0.72, 'rgba(150,200,60,0.08)');
+        gg.addColorStop(1, 'rgba(120,170,50,0)');
+        gcx.fillStyle = gg;
+        gcx.fillRect(0, 0, gsz, gsz);
+      }
+      b.save();
+      b.globalCompositeOperation = 'lighter';
+      b.globalAlpha = 0.6 + 0.4 * bPulse;
+      b.drawImage(R._bombGlow, e.x - bRad, e.y - bRad, bRad * 2, bRad * 2);
+      b.restore();
+      /* 裂口冒火星：频率也随残血升高 */
+      if (Math.random() < 0.04 + bRage * 0.10) {
+        var bsa = Math.random() * U.TAU;
+        var rs = R._run;
+        if (rs && rs.fx.length < 200) {
+          rs.fx.push({
+            kind: 'p', x: e.x + Math.cos(bsa) * e.r * 0.5, y: e.y + Math.sin(bsa) * e.r * 0.4,
+            vx: Math.cos(bsa) * 12, vy: -U.rand(12, 30),
+            life: 0.3, max: 0.3, color: '#f6ffb0', size: 1.4
+          });
+        }
+      }
+    }
+
+    /* 近战受击抖动：**只晃被砍的这一只**（±1.6px + 轻微放大），镜头不动。
+       以前是全屏震 3.5px，挥砍频率一高画面就一直在飘；
+       把位移放到目标身上，读起来更像"这一下打在肉上"，也不晕。 */
+    var jol = e.jolt > 0 ? Math.min(1, e.jolt / 0.12) : 0;
+    if (jol > 0) {
+      var jx = Math.sin(e.jolt * 220) * 1.6 * jol;
+      var jy = Math.cos(e.jolt * 180) * 0.9 * jol;
+      b.save();
+      b.translate(jx, jy);
+      R.drawActor(b, e.spriteName, e.x, ey2, esc * (1 + 0.07 * jol), e.anim, e.gait,
+        e.lean, e.hitSprite, Math.min(0.45, e.flash * 0.65));
+      b.restore();
+    } else {
+      R.drawActor(b, e.spriteName, e.x, ey2, esc, e.anim, e.gait,
+        e.lean, e.hitSprite, Math.min(0.45, e.flash * 0.65));
+    }
     R.drawStatus(b, e, HS.Game && HS.Game.run ? HS.Game.run.t : 0);
     if (e.elite) {
       var bw = 18;
@@ -4466,14 +6015,50 @@
     }
   };
 
+  /**
+   * 事故车身上的伤：车头/车尾被压瘪的折痕 + 碎掉的挡风玻璃。
+   * 车壳本身还是那几张贴图 —— 这一层是"它撞过"的读法，
+   * 没有它，一堆斜着停的车看起来只是乱停车。
+   */
+  R.carDamage = function (b, o) {
+    var seed = (o.acc * 977 + Math.round(o.x) * 31 + Math.round(o.y)) | 0;
+    var r = function (i) { return U.hash(seed, i, 7321); };
+    var hw = o.w / 2, hh = o.h / 2, i;
+    /* 整体压暗一档：废车比停在路边的车更暗、更哑 */
+    b.fillStyle = 'rgba(0,0,0,0.32)';
+    b.fillRect(-hw, -hh, o.w, o.h);
+    b.fillStyle = 'rgba(92,62,42,0.16)';    // 一层薄锈色：事故车比"停在路边的车"脏得多
+    b.fillRect(-hw, -hh, o.w, o.h);
+    /* 折痕：车身前后各一撮短斜线，像被挤皱的铁皮 */
+    b.fillStyle = 'rgba(8,8,10,0.50)';
+    for (i = 0; i < 4; i++) {
+      b.fillRect(Math.round(-hw + 2 + r(i) * (o.w - 5)),
+        Math.round(-hh + 2 + r(i + 8) * 5), 3, 1);
+      b.fillRect(Math.round(-hw + 2 + r(i + 16) * (o.w - 5)),
+        Math.round(hh - 5 + r(i + 24) * 3), 3, 1);
+    }
+    /* 裂开的挡风玻璃：一条横着的冷白 + 两粒碎屑 */
+    b.fillStyle = 'rgba(188,214,236,0.28)';
+    b.fillRect(Math.round(-hw + 3), Math.round(-hh + 4 + r(30) * 2), Math.round(o.w - 6), 2);
+    b.fillStyle = 'rgba(226,240,252,0.42)';
+    b.fillRect(Math.round(-hw + 4 + r(31) * 4), Math.round(-hh + 7), 1, 1);
+    b.fillRect(Math.round(hw - 6 - r(32) * 3), Math.round(hh - 9), 1, 1);
+  };
+
   R.drawProp = function (b, o, run) {
     if (o.broken) return;
+    /* 事故车先落地一道投影：一堆车挤在一起时，靠它才看得出前后关系 */
+    if (o.acc !== undefined) {
+      b.fillStyle = 'rgba(0,0,0,0.34)';
+      ellipseFill(b, o.x + 1.5, o.y + 3.5, o.w * 0.52, o.h * 0.46);
+    }
     if (o.ang) {
       /* 废弃车辆按生成时的随机角旋转；碰撞是同一个旋转矩形，不会"看着歪、撞着正" */
       b.save();
       b.translate(Math.round(o.x), Math.round(o.y));
       b.rotate(o.ang);
       S.draw(b, o.frame, 0, 0, 1, undefined, o.flip);
+      if (o.acc !== undefined) R.carDamage(b, o);
       b.restore();
     } else {
       S.draw(b, o.frame, o.x, o.y, 1, undefined, o.flip);

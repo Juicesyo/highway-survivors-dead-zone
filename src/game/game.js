@@ -17,8 +17,8 @@
   var MAX_AUTOS = 9;       // 自动装备件数上限（另有按类型细分的上限）
 
   /* 无尽模式刷怪表：[类型, 首次出场秒数, 基础权重, 地图序号]
-     四张图的杂兵全都会来，但按地图顺序一层层放：
-       末世街区(0) → 死区之夜(1) → 荒漠公路(2) → 锈水高速(3)
+     五张图的杂兵全都会来，但按地图顺序一层层放：
+       末世街区(0) → 死区之夜(1) → 荒漠公路(2) → 锈水高速(3) → 公路隧道(4)
      同一张图里靠前的怪先出、重量级后出；前一张图没出齐之前，
      下一张图的怪不会提前混进来 —— 否则开局就被枪手点、水鬼贴脸，节奏是乱的 */
   var ENDLESS_TYPES = [
@@ -30,7 +30,8 @@
     ['pouncer', 120, 0.30, 1],
     ['vomiter', 155, 0.28, 1],
     ['terrorist', 195, 0.26, 2],
-    ['drowner', 235, 0.34, 3]
+    ['drowner', 235, 0.34, 3],
+    ['bomber', 275, 0.30, 4]
   ];
 
   /* 换场提示：时间必须与上面每张图第一只怪的解锁秒一致 */
@@ -38,14 +39,15 @@
     [0, '末世街区'],
     [120, '死区之夜'],
     [195, '荒漠公路'],
-    [235, '锈水高速']
+    [235, '锈水高速'],
+    [275, '公路隧道']
   ];
 
   var Game = {
     state: 'title',
     run: null,
     save: null,
-    selChar: 'soldier',
+    selChar: 'whale',
     selMap: 'highway',
     tab: 'char',
     endless: false,
@@ -62,7 +64,12 @@
     _bgmMenu: null,
     vibOn: true,
     fxLow: false,
+    /* 角色朝向：true = 跟着移动方向转（四向精灵），false = 永远正面。
+       面朝镜头的小人转身要换整套贴图，切的时候容易"变形"，所以给玩家一个开关 */
+    turnView: true,
     wipeAsk: false,
+    /* 暂停页里的"设置"子页：真 = 正在改音效 / 画面特效（状态仍是 paused） */
+    pauseSet: false,
     confirm: null,     // 副武器替换的二次确认 { i, card }
     lootAsk: null,     // 搜刮翻到的主武器，等玩家点头
     lootFrom: '',
@@ -71,12 +78,13 @@
 
     init: function () {
       this.save = HS.Save.load();
-      this.selChar = this.save.chars[0] || 'soldier';
+      this.selChar = 'whale';          // 只有鲸鱼娘一个角色，存档里的 chars 只做兼容
       if (this.save.unlockedMaps.indexOf(this.selMap) < 0) this.selMap = 'highway';
       this.sfxOn = this.save.sfx !== false;
       this.bgmOn = this.save.bgm !== false;
       this.vibOn = this.save.vib !== false;
       this.fxLow = this.save.fxLow === true;
+      this.turnView = this.save.turnView !== false;
       HS.Audio.enabled = this.sfxOn;
       HS.Audio.setBgm(this.bgmOn);
       P.vibrateOn = this.vibOn;
@@ -110,14 +118,24 @@
 
     startRun: function (mapId, charId) {
       var d = HS.Save.data;
-      var ch = D.chars[charId] || D.chars.soldier;
+      var ch = D.chars[charId] || D.chars.whale;
       var mp = D.maps[mapId] || D.maps.highway;
 
       var baseHp = ch.hp + (d.perm.hp || 0) * 8;
 
       var p = {
         x: 0, y: 0, r: 5,
+        /* 主角贴图是 48x56 位图帧（世界 24x28），比原来的 12x14 高一倍：
+           绘制时上抬 7px 让脚底还踩在原来的位置，见 render.js 的 PSPRITE_LIFT */
         sprite: 'player_' + ch.id,
+        spriteHappy: 'player_' + ch.id + '_happy',
+        /* 搜刮成功后的「开心跳」剩余时间。>0 时换开心帧 + 走抛物线上抬 */
+        cheerT: 0, cheerMax: 0.9,
+        /* 朝向：dn / up / lf / rt，决定用哪一组精灵帧和持枪锚点。
+           faceCand 是"候选朝向"，要连续按住 0.1s 才真的转 —— 摇杆在 45° 附近会抖，
+           没有这个缓冲就会左右乱翻。faceTurnT 是换向后的压扁动画（当作"转身"） */
+        faceDir: 'dn', facePrev: 'dn', faceTurnT: 0,
+        faceCand: '', faceCandT: 0,
         hp: baseHp, maxHp: baseHp,
         base: {
           hp: baseHp,
@@ -129,6 +147,8 @@
         },
         level: 1, xp: 0, xpNext: 10,
         invuln: 0, facing: 1, anim: 0, hurtT: 0,
+        /* 超声眩晕：stun > 0 时不能走也不能开枪（见 updateRun） */
+        stun: 0, stunMax: 0,
         /* 瞄准角（手里的枪按这个角度摆）、枪口焰 / 后坐、待投请求 */
         aimA: 0, fireT: 0, coneT: 0, recoil: 0, throws: [],
         /* 步态：gait 随移动平滑升降（0 站住 / 1 正常走），lean 是身体前倾 */
@@ -137,12 +157,16 @@
         /* 装备：手持（主 / 副 / 重型）与自动装备分开存 */
         weapons: [], autos: [],
         passives: {},
+        /* 已拿的取舍卡（一张同时带正负，见 D.tradeoffs）。不占 MAX_PASSIVES 槽位 */
+        trade: {},
         syn: {},              // 已生效的联动
         synLv: {},            // 联动强化等级
         statVer: 1,           // 数值版本号，变了就重算武器缓存
 
         /* 通用属性结算出的角色数值 */
         dmgMul: 1, atkMul: 1, areaMul: 1, spdMul: 1, rangeMul: 1, durMul: 1,
+        /* rangeMul 的两截：rangeBoost 是玩家投入，mapRangeMul 是地图惩罚（近战只吃一半） */
+        rangeBoost: 1, mapRangeMul: 1,
         crit: 0.03, critMul: 1.6, armor: 0, regen: 0, dodge: 0, lifesteal: 0,
         magnet: 34, luck: 0, xpMul: 1, cdr: 0, projCount: 0,
         pierce: 0, split: 0, bounce: 0, homing: 0,
@@ -155,6 +179,10 @@
         bladeAngle: 0, bladeTick: 0, frostTick: 0,
         ampT: 0, ampMul: 1, heatT: 0, xbT: 0, xbStack: 0, qiHits: 0,
         rateT: 0, rateMul: 0.2,   // 「暴走」联动的临时攻速窗口
+        /* 水鬼拖拽：剩余时长 + 这段位移的速度（见 Game.dragToWater）。
+           只是位移，不影响开火和摇杆 —— 和 stun 有本质区别。
+           dragImmune：松口后的免疫窗口，防止被几只水鬼接力拖进深水中央 */
+        dragT: 0, dragVX: 0, dragVY: 0, dragImmune: 0,
         roof: null,
         /* 当前驾驶的载具（null = 步行）；装备加成在这里落成具体数值 */
         veh: null, vehDurMul: 1, vehRamMul: 1, vehWearCut: 1,
@@ -170,6 +198,9 @@
         pending: 0, choices: [], choiceT: 0,
         spawnAcc: 0, eliteT: 0, eventT: 46,
         boss: null, bossSpawned: false, bossKilled: false,
+        /* 一场首领可以有两只（公路隧道）：bosses 是存活的全部，boss 只是其中的"门面"
+           —— UI 血条、破墙淡出、旧测试都还认 run.boss 这一个字段 */
+        bosses: [],
         nextBossAt: RUN_TIME, bossCount: 0, endless: !!this.endless, endlessStage: 1,
         search: null, lootTarget: null, lootedCount: 0,
         insideBld: null, enteredHint: false, roofHint: false, roofClimbHint: false,
@@ -191,7 +222,7 @@
       if (this.testMode) {
         p.x = 0;
         p.y = 0;
-      } else if (mp.theme === 'desert' || mp.theme === 'flood') {
+      } else if (mp.theme === 'desert' || mp.theme === 'flood' || mp.theme === 'tunnel') {
         p.x = 0;
         p.y = U.randInt(-2, 2) * HS.World.BLOCK + U.rand(-60, 60);
       } else {
@@ -225,6 +256,8 @@
         this.bannerShow('荒漠公路 · 当心路边的枪手', 3.2);
       } else if (mp.water) {
         this.bannerShow('锈水高速 · 浅水减速 / 深水禁行 / 电流敌我皆伤', 4);
+      } else if (mp.tunnel) {
+        this.bannerShow('公路隧道 · 自爆尸被打死会炸 · 双首领同时入场', 4);
       }
       HS.Input.enabled = true;
       HS.Input.reset();
@@ -239,22 +272,27 @@
       var d = HS.Save.data;
       var lv = function (id) { return p.passives[id] || 0; };
       var oldMax = p.maxHp;
+      /* 取舍卡汇总：正负都在同一张表里，后面各个倍率统一乘 tm.*，
+         避免"某张卡的负面效果被漏掉"这种最讨人厌的 bug */
+      var tm = HS.Data.tradeMod ? HS.Data.tradeMod(p.trade) : null;
+      if (!tm) tm = { dmg: 1, atk: 1, spd: 1, range: 1, hp: 1, dur: 1, count: 0, armor: 0 };
 
       /* 先把装备态算出来：重型减速、自动装填、格挡率都要用到 */
       HS.Gear.refresh(p);
 
       /* 体质是固定值，防弹背心是百分比；先加固定值再乘倍率 */
       p.maxHp = Math.max(1, Math.round(
-        (p.base.hp + lv('vigor') * 14) * (1 + lv('vest') * 0.12)
+        (p.base.hp + lv('vigor') * 14) * (1 + lv('vest') * 0.12) * tm.hp
       ));
       if (p.hp > 0 && p.maxHp > oldMax) p.hp = Math.min(p.maxHp, p.hp + (p.maxHp - oldMax));
 
       p.dmgMul = p.base.dmgMul
         * (1 + (d.perm.dmg || 0) * 0.03)
-        * (1 + lv('power') * 0.08);
+        * (1 + lv('power') * 0.08)
+        * tm.dmg;
 
       /* 攻速：持续射击吃满，独立冷却武器只吃一半（在 Gear.global 里分账） */
-      p.atkMul = 1 + lv('haste') * 0.10 + (p.atkFromGear || 0);
+      p.atkMul = (1 + lv('haste') * 0.10 + (p.atkFromGear || 0)) * tm.atk;
       p.cdr = Math.min(0.40, lv('cdr') * 0.06);
 
       p.crit = Math.min(0.60, p.base.crit + lv('crit') * 0.05 + (d.perm.luck || 0) * 0.01);
@@ -262,7 +300,7 @@
 
       /* 弹道类：具体换算交给每把武器的 fam */
       p.pierce = lv('pierce');
-      p.projCount = lv('projCount');
+      p.projCount = lv('projCount') + tm.count;
       p.split = lv('split');
       p.bounce = lv('bounce');
       p.homing = lv('homing') > 0 ? 1 : 0;
@@ -270,9 +308,14 @@
       p.chainLvl = lv('chainbolt');
       if (p.chainN === undefined) p.chainN = 0;
 
-      p.rangeMul = (1 + lv('range') * 0.08) * this.mapRangeMul();
+      /* 射程拆成两截：rangeBoost 是玩家投入（属性 + 取舍），mapRangeMul 是夜图惩罚。
+         近战吃满前者、只吃一半后者 —— 以前混成一个 rangeMul 再对近战整体打对折，
+         等于「攻击范围」对近战永远是一张半价卡。 */
+      p.mapRangeMul = this.mapRangeMul();
+      p.rangeBoost = (1 + lv('range') * 0.08) * tm.range;
+      p.rangeMul = p.rangeBoost * p.mapRangeMul;
       p.areaMul = 1 + lv('blast') * 0.10;
-      p.durMul = 1 + lv('duration') * 0.12;
+      p.durMul = (1 + lv('duration') * 0.12) * tm.dur;
 
       /* 元素与针对型属性。这里只算倍率，"谁吃得到"由武器 / 敌人那边决定：
          burnMul 只乘燃烧 dot，chillAdd 只加冰系减速，armorPen 只削实弹护甲 */
@@ -283,19 +326,21 @@
       /* 处决：不再给满血目标加伤，改成"血线以下一命中就斩杀"（见 combat.js） */
       p.execCut = HS.Data.execCut ? HS.Data.execCut(lv('execute')) : 0;
       p.steamLv = lv('steam');
+      /* 刃返：近战的清弹能力（稀有卡，不是默认能力） */
+      p.bladeGuard = lv('bladeguard');
 
-      p.armor = Math.min(8, p.base.armor + lv('armor'));
+      p.armor = Math.min(8, p.base.armor + lv('armor') + tm.armor);
       p.dodge = Math.min(0.24, lv('dodge') * 0.08);
       p.lifesteal = lv('lifesteal') * 0.6;
       p.regen = p.base.regen + lv('regen') * 0.45;
 
-      p.magnet = 44 * (1 + lv('magnet') * 0.24);
+      p.magnet = 44 * (1 + lv('magnet') * 0.24) * tm.magnet;
       p.xpMul = (1 + lv('study') * 0.09) * (this.run && this.run.map ? this.run.map.xpMul || 1 : 1);
       p.luck = (d.perm.luck || 0) * 0.08 + lv('luck') * 0.08;
       p.goldMul = (1 + (d.perm.greed || 0) * 0.12) * (this.run && this.run.map ? this.run.map.goldMul : 1) * (1 + lv('greed') * 0.10);
 
       /* 移动：重型武器会拖慢脚步，这是它的代价之一 */
-      p.spdMul = (1 + (d.perm.spd || 0) * 0.03 + lv('swift') * 0.06) * (p.heavyMove || 1);
+      p.spdMul = (1 + (d.perm.spd || 0) * 0.03 + lv('swift') * 0.06) * (p.heavyMove || 1) * tm.spd;
 
       p.projSpeedMul = 1;
       p.chainBonus = 0;
@@ -346,7 +391,10 @@
     update: function (dt) {
       this.t += dt;
       this.uiT += dt;
-      if (this.bannerT > 0) this.bannerT -= dt;
+      /* 横幅只在局内画（UI.hud）。升级 / 搜刮确认 / 结算这些盖屏状态下也照走的话，
+         一条「第 2 只 血肉暴君」会在升级界面后面悄悄过期 —— 玩家回到游戏时什么都没看见。
+         所以计时只在真正看得见的时候往前走。 */
+      if (this.state === 'run' && this.bannerT > 0) this.bannerT -= dt;
       if (this.noticeT > 0) this.noticeT -= dt;
 
       if (this.state === 'run') {
@@ -374,8 +422,22 @@
       var run = this.run, p = run.p;
       run.t += dt;
       run.uiT += dt;
+      run.hitStopOn = 0;          // 一帧最多触发一次顿帧
+      /* 顿帧（hitstop）：重击命中的 40ms 里世界慢下来 —— 拳拳到肉最有效的一招。
+         **只压后面的世界更新，不压上面的游戏时钟**：刷怪 / Boss 计时 / 结算
+         仍然按真实时间走，否则整局的时间轴会被每一次顿帧往后推。 */
+      if (this.hitStop > 0) {
+        this.hitStop -= dt;
+        dt *= 0.12;
+      }
 
       if (run.shake > 0) run.shake = Math.max(0, run.shake - dt * 28);
+      /* 震屏疲劳：屏幕**连着**抖的时候（自爆尸连锁、油桶串爆、尸潮里的爆炸），
+         后续震动按比例打折 —— 见 R.shakeAmount。单次爆炸震一下就停，
+         疲劳度还没攒起来，所以"一炮"的手感不受影响。
+         这里只记"屏幕已经抖了多久"，不改任何伤害/判定。 */
+      if (run.shake > 0.4) run.shakeBusy = Math.min(1, (run.shakeBusy || 0) + dt * 1.4);
+      else run.shakeBusy = Math.max(0, (run.shakeBusy || 0) - dt * 0.9);
       if (run.frenzyT > 0) run.frenzyT -= dt;
 
       /* 搜刮中：不动、不攻击，移动或挨打都会中断 */
@@ -390,9 +452,48 @@
 
       /* 移动 */
       var ax = run.search ? { dx: 0, dy: 0, mag: 0 } : HS.Input.axis();
+      /* 眩晕（尖啸者的超声）：整个人定住 —— 不能走、不能开枪。
+         这是这张图最贵的一次惩罚：0.9 秒足够一群自爆尸贴到脸上。
+         坐在车里只是被震得手抖（0.35 秒），车体本身还有一层铁皮挡着。 */
+      var stunned = p.stun > 0;
+      if (stunned) ax = { dx: 0, dy: 0, mag: 0 };
       var moving = ax.mag > 0.05;
       var pSpd = p.base.speed * p.spdMul * HS.Water.speed(p, run);
       var px0 = p.x, py0 = p.y;
+      /* 水鬼拖拽：一段持续位移，和摇杆**叠加** —— 玩家仍然能走、能开枪，
+         只是脚下多了一股往深水去的力。放在 px0 之后，下面那次
+         World.resolve 才看得见这段位移，不会把人拖进墙里。
+         车里不受影响（p.veh 在下面单独走载具逻辑）。 */
+      /* 拖拽免疫：松口之后的一小段保护期（见 Game.dragToWater） */
+      if (p.dragImmune > 0) p.dragImmune = Math.max(0, p.dragImmune - dt);
+      if (p.dragT > 0 && !p.veh) {
+        p.dragT -= dt;
+        /* 拖到深水边缘就顶住，**不把人推进去**。
+           深水对玩家是 0.30 倍速、对丧尸是 0.34 —— 玩家比怪还慢，
+           真被推进去等于判死刑：走不出来，怪也懒得进来，既打不到 BOSS 也死不掉。 */
+        var drx = p.dragVX * dt, dry = p.dragVY * dt;
+        var dnx = p.x + drx, dny = p.y + dry;
+        if (HS.Water && HS.Water.zone(dnx, dny, run) === 2 &&
+            HS.Water.zone(p.x, p.y, run) !== 2) {
+          p.dragT = 0;
+          p.dragVX = 0;
+          p.dragVY = 0;
+        } else {
+          p.x = dnx;
+          p.y = dny;
+          /* 拖痕：被拽着走，脚下甩出一路水花 —— 这是"我正在被拖"的唯一提示，
+             不画的话玩家只会觉得"我按键怎么不灵" */
+          if (run.fx.length < 200 && Math.random() < 0.6) {
+            run.fx.push({
+              kind: 'p', x: p.x + U.rand(-4, 4), y: p.y + U.rand(0, 4),
+              vx: -p.dragVX * 0.3 + U.rand(-12, 12), vy: -U.rand(8, 26),
+              life: 0.3, max: 0.3,
+              color: Math.random() < 0.5 ? '#a8e0d8' : '#6f9b93', size: 1.6
+            });
+          }
+        }
+        if (p.dragT <= 0) { p.dragVX = 0; p.dragVY = 0; }
+      }
       if (p.veh) {
         /* 开车：速度、转向、碰撞、碾压都在载具模块里 */
         HS.Vehicle.drive(run, dt, ax);
@@ -405,6 +506,26 @@
         /* 步频跟着速度走：被减速时会自动变成慢步（约 3.5 步/秒，像在跑而不是小碎步） */
         p.anim += dt * (3.5 + pSpd * 0.12);
         if (Math.abs(ax.dx) > 0.15) p.facing = ax.dx > 0 ? 1 : -1;
+        /* 朝向：取"占优的那根轴"，而且候选方向要连续保持 0.1s 才生效。
+           摇杆在 45° 附近会左右抖，没有这个缓冲，人物会两个朝向之间疯狂翻。 */
+        var axx = Math.abs(ax.dx), ayy = Math.abs(ax.dy);
+        var cand = '';
+        if (axx > ayy * 1.15) cand = ax.dx > 0 ? 'rt' : 'lf';
+        else if (ayy > axx * 1.15) cand = ax.dy > 0 ? 'dn' : 'up';
+        if (cand && cand !== p.faceDir) {
+          if (p.faceCand !== cand) { p.faceCand = cand; p.faceCandT = 0; }
+          p.faceCandT += dt;
+          if (p.faceCandT >= 0.1) {
+            p.facePrev = p.faceDir;
+            p.faceDir = cand;
+            p.faceTurnT = 0.09;
+            p.faceCand = '';
+            p.faceCandT = 0;
+          }
+        } else {
+          p.faceCand = '';
+          p.faceCandT = 0;
+        }
       } else {
         p.anim += dt * 1.6;
       }
@@ -448,6 +569,17 @@
 
       p.invuln = Math.max(0, p.invuln - dt);
       p.hurtT = Math.max(0, p.hurtT - dt);
+      if (p.stun > 0) {
+        p.stun = Math.max(0, p.stun - dt);
+        if (p.stun === 0 && p.stunMax) {
+          run.fx.push({
+            kind: 'ring', x: p.x, y: p.y - 2, r: 4, max: 20,
+            life: 0.26, maxLife: 0.26, color: '#bfe9ff'
+          });
+        }
+      }
+      if (p.cheerT > 0) p.cheerT = Math.max(0, p.cheerT - dt);
+      if (p.faceTurnT > 0) p.faceTurnT = Math.max(0, p.faceTurnT - dt);
       p.fireT = Math.max(0, p.fireT - dt);
       /* 元素光锥的余辉比枪口焰长：喷射武器 0.16~0.22s 才点一次，
          只跟 0.07s 的枪口焰会让锥形闪一下就消失 */
@@ -462,7 +594,11 @@
       }
 
       if (!p.veh) this.updateAim(dt);
-      if (!run.search && !p.veh) this.updateWeapons(dt);
+      /* 持续光束的余辉：局内每帧都衰减。放在这里而不是 updateWeapons 里 ——
+         驾驶 / 搜刮 / 眩晕时武器不更新，光不能因此冻在屏幕上（见 Gear.beam 的常驻光束） */
+      if (p.beamHold && p.beamHold.life > 0) p.beamHold.life -= dt;
+      /* 眩晕时手是软的：不能扣扳机（自动装备照常工作） */
+      if (!run.search && !p.veh && !stunned) this.updateWeapons(dt);
       HS.Auto.update(run, dt);
       this.updateThrows(dt);
       this.updateBullets(dt);
@@ -504,7 +640,11 @@
     updateAim: function (dt) {
       var p = this.run.p;
       var t = this.nearest(p.x, p.y, 250);
-      var want = t ? Math.atan2(t.y - p.y, t.x - p.x) : (p.facing > 0 ? 0 : Math.PI);
+      /* 没有目标时把枪端在朝向那一侧（以前只会朝左右，转身后枪还朝着侧面很怪） */
+      var idleA = p.faceDir === 'up' ? -Math.PI / 2
+        : p.faceDir === 'dn' ? Math.PI / 2
+        : p.faceDir === 'lf' ? Math.PI : 0;
+      var want = t ? Math.atan2(t.y - p.y, t.x - p.x) : idleA;
       var d = want - p.aimA;
       while (d > Math.PI) d -= U.TAU;
       while (d < -Math.PI) d += U.TAU;
@@ -690,7 +830,8 @@
         run.supplyDropped = true;
         var sa = Math.random() * U.TAU;
         var sd = 150 + Math.random() * 40;
-        run.drops.push(this.hintDrop({ kind: 'chest', x: run.p.x + Math.cos(sa) * sd, y: run.p.y + Math.sin(sa) * sd, bob: 0, life: 90, dead: false }, 8));
+        var sp1 = this.dropSpot(run.p.x + Math.cos(sa) * sd, run.p.y + Math.sin(sa) * sd);
+        run.drops.push(this.hintDrop({ kind: 'chest', x: sp1.x, y: sp1.y, bob: 0, life: 90, dead: false }, 8));
         run.drops.push({ kind: 'heart', x: run.p.x + Math.cos(sa + 2.2) * sd, y: run.p.y + Math.sin(sa + 2.2) * sd, bob: 0, life: 90, dead: false });
         this.bannerShow('最后的补给已空投', 2.6);
       }
@@ -713,10 +854,29 @@
       /* 荒漠公路：活人枪手混在尸群里。比例随局内时间缓慢上升（最多 +20%），
          但始终是少数 —— 满屏枪手就没法玩了 */
       var map = (this.run && this.run.map) || {};
+      /* 公路隧道：自爆尸 25 秒后混进来，呕酸尸 70 秒后补位，
+         扑袭者 100 秒才进场。这三样都"不许站桩"：一个逼你挪、一个逼你别贴脸、
+         一个逼你听嘶声侧移。
+         **扑袭者是唯一要压着放的**：它本来是死区之夜（街区）的专属怪，
+         街区左右各有 ~160px 的横移空间，看到它压低身体还能侧滑躲开；
+         隧道走廊只有 |x|<88、尸群又从前后压来，同样一次猛扑在这里几乎躲不掉。
+         所以它给的面额最小（0.08，别的都是 0.16 起），出场也最晚（100s，
+         那时候玩家通常已经有 2~3 件自动装备可以替自己挡一下）。 */
+      if (map.tunnel) {
+        var rt = Math.random();
+        if (t > 25 && rt < 0.14 + Math.min(0.08, t / 2400)) return 'bomber';
+        if (t > 70 && rt < 0.30) return 'vomiter';
+        if (t > 100 && rt < 0.38) return 'pouncer';
+        if (t > 130 && rt < 0.44) return 'spitter';
+      }
       if (map.water) {
         var rw = Math.random();
-        if (t > 20 && rw < 0.22) return 'drowner';
-        if (t > 55 && rw < 0.36) return 'vomiter';
+        /* 水鬼 0.22 → 0.14：它现在能一路潜到脚下、出水那一口也不再咬空
+           （出水阈值 18 < 咬击阈值 18.5），单只强度比过去高了一个档。
+           密度不跟着降的话，前期就是"每 5 只里有 1 只点名扣血"，
+           锈水高速的机器人平均存活会从 286 秒掉到 121 秒。 */
+        if (t > 20 && rw < 0.14) return 'drowner';
+        if (t > 55 && rw < 0.32) return 'vomiter';
       }
       if (map.gunmen && Math.random() < map.gunmen + Math.min(0.2, t / 900)) return 'terrorist';
 
@@ -766,6 +926,17 @@
 
     spawnPos: function (extra) {
       var p = this.run.p;
+      /* 公路隧道：尸群只能从走廊的两头压过来（两侧是山体）。
+         刷在墙上再靠 insideSolid 往外找空地会出现"凭空出现在身边"，
+         所以这里直接沿着 x 收窄、只在 y 上放远。 */
+      if (this.run.map && this.run.map.tunnel) {
+        var half = HS.World.TUN_HALF || 88;
+        var tx = p.x + U.rand(-84, 84);
+        if (tx > half - 12) tx = half - 12;
+        if (tx < -(half - 12)) tx = -(half - 12);
+        var sgn = Math.random() < 0.5 ? -1 : 1;
+        return { x: tx, y: p.y + sgn * (P.VH / 2 + 22 + (extra || 0)) };
+      }
       var mx = P.VW / 2 + 22 + (extra || 0);
       var my = P.VH / 2 + 22 + (extra || 0);
       // 左右两侧更近，权重更高，保证怪物能及时压上来
@@ -777,6 +948,36 @@
       else if (side === 2) { x = p.x - mx; y = p.y + U.rand(-my * 0.8, my * 0.8); }
       else { x = p.x + mx; y = p.y + U.rand(-my * 0.8, my * 0.8); }
       return { x: x, y: y };
+    },
+
+    /**
+     * 掉落物（空投 / 精英宝箱）的落点：**必须先落在地上**。
+     *
+     * 以前直接按极坐标算一个点就塞进 run.drops —— 隧道两侧是山体，
+     * 空投有一半概率掉进墙里（玩家看着信号柱在衬砌里，走过去什么也没有）；
+     * 街道上也会掉进楼体或废墟。这里做两件事：
+     *   ① 隧道：x 先收回走廊（两侧各留 14px，别贴着墙）
+     *   ② 整体往外螺旋找一个不压实的点；实在找不到就回走廊中线
+     */
+    dropSpot: function (x, y) {
+      var half = HS.World.TUN_HALF || 88;
+      var tunnel = !!(this.run && this.run.map && this.run.map.tunnel);
+      if (tunnel) {
+        if (x > half - 14) x = half - 14;
+        if (x < -(half - 14)) x = -(half - 14);
+      }
+      if (!HS.World.insideSolid(x, y)) return { x: x, y: y };
+      for (var st = 0; st < 16; st++) {
+        var a = Math.random() * U.TAU;
+        var r = 10 + st * 8;
+        var nx = x + Math.cos(a) * r, ny = y + Math.sin(a) * r;
+        if (tunnel) {
+          if (nx > half - 14) nx = half - 14;
+          if (nx < -(half - 14)) nx = -(half - 14);
+        }
+        if (!HS.World.insideSolid(nx, ny)) return { x: nx, y: ny };
+      }
+      return { x: tunnel ? 0 : x, y: y };
     },
 
     spawnEnemy: function (typeId, elite, px, py) {
@@ -893,59 +1094,96 @@
       run.bossSpawned = true;
       run.bossCount = (run.bossCount || 0) + 1;
       var p = run.p;
-      var side = Math.random() < 0.5 ? -1 : 1;
-      var pos = {
-        x: p.x + side * (P.VW / 2 + 34),
-        y: p.y + U.rand(-P.VH * 0.28, P.VH * 0.28)
-      };
-      var bossId = run.map.bossId || 'boss';
-      /* 无尽模式：三张图的首领轮流出场 —— 从本图这只开始，然后依次换。
-         每只都照吃 bossCount 的血量 / 伤害加成，越往后越难啃 */
-      if (run.endless) {
-        var bossRing = ['boss', 'gatling', 'stalker', 'axeboss'];
-        var ringFrom = bossRing.indexOf(bossId);
-        if (ringFrom < 0) ringFrom = 0;
-        bossId = bossRing[(ringFrom + run.bossCount - 1) % bossRing.length];
-      }
-      var bossDef = D.enemies[bossId] || D.enemies.boss;
-      var e = this.spawnEnemy(bossId, false, pos.x, pos.y);
-      if (run.endless) {
-        /* 轮换的三只首领取同一个血量基准，只随场次增长。
-           否则血肉暴君(460) / 扫射暴君(1000) / 猎杀者(2150) 的原始血量差 4 倍，
-           第二只反而比第一只好打，轮换就变成"捡便宜"了。
-           差异化交给招式（冲锋 / 扫射 / 扑杀）和基础伤害 */
-        var eBase = 1300 * Math.pow(1.45, run.bossCount - 1);
-        e.maxHp = eBase;
-        e.hp = eBase;
-        e.dmg *= 1 + 0.12 * (run.bossCount - 1);
-        e.speed *= 1 + 0.05 * (run.bossCount - 1);
-      } else if (run.bossCount > 1) {
-        var boost = Math.pow(1.45, run.bossCount - 1);
-        e.maxHp *= boost;
-        e.hp = e.maxHp;
-        e.dmg *= 1 + 0.15 * (run.bossCount - 1);
-        e.speed *= 1 + 0.06 * (run.bossCount - 1);
-      }
-      e.boss = true;
-      run.boss = e;
 
-      /* 登场震场：清掉贴身杂兵，给 Boss 一个能看清的舞台 */
-      for (var bi = 0; bi < run.enemies.length; bi++) {
-        var bo = run.enemies[bi];
-        if (bo === e || bo.boss || bo.dead) continue;
-        if (U.dist(bo.x, bo.y, e.x, e.y) < 115) {
-          bo.dead = true;
-          run.fx.push({
-            kind: 'p', x: bo.x, y: bo.y,
-            vx: U.rand(-60, 60), vy: U.rand(-70, 10),
-            life: 0.5, max: 0.5, color: '#3a3a42', size: 2
-          });
+      /* 一场几只首领：公路隧道是双首领（尖啸者 + 育母），其余地图一只。
+         两只同时入场，必须都打死才通关（判定在 combat.js 的 killEnemy）。 */
+      var baseId = run.map.bossId || 'boss';
+      var idList = (run.map.bossIds && run.map.bossIds.length) ? run.map.bossIds.slice() : [baseId];
+
+      /* 无尽模式：五张图的首领轮流出场 —— 从本图这只开始，然后依次换。
+         每只都照吃 bossCount 的血量 / 伤害加成，越往后越难啃。
+         双首领图在无尽里拆成单只轮换，免得一轮里被两只堵在走廊里。 */
+      if (run.endless) {
+        var bossRing = ['boss', 'gatling', 'stalker', 'axeboss', 'shrieker', 'brood'];
+        var ringFrom = bossRing.indexOf(baseId);
+        if (ringFrom < 0) ringFrom = 0;
+        idList = [bossRing[(ringFrom + run.bossCount - 1) % bossRing.length]];
+      }
+
+      run.bosses = [];
+      var tunnel = !!run.map.tunnel;
+      for (var q = 0; q < idList.length; q++) {
+        var bossId = idList[q];
+        var pos;
+        if (tunnel) {
+          /* 走廊只有前后两个方向能站人：一只在上、一只在下，隔着玩家对峙 */
+          var dir = (q % 2 === 0) ? -1 : 1;
+          pos = {
+            x: p.x + (q === 0 ? -26 : 26),
+            y: p.y + dir * (P.VH * 0.5 + 30)
+          };
+        } else {
+          var side = Math.random() < 0.5 ? -1 : 1;
+          pos = {
+            x: p.x + side * (P.VW / 2 + 34),
+            y: p.y + U.rand(-P.VH * 0.28, P.VH * 0.28)
+          };
+        }
+
+        var bossDef = D.enemies[bossId] || D.enemies.boss;
+        var e = this.spawnEnemy(bossId, false, pos.x, pos.y);
+        if (run.endless) {
+          /* 轮换的首领取同一个血量基准，只随场次增长。
+             否则血肉暴君(460) / 扫射暴君(1000) / 猎杀者(2150) 的原始血量差 4 倍，
+             第二只反而比第一只好打，轮换就变成"捡便宜"了。
+             差异化交给招式（冲锋 / 扫射 / 扑杀 / 超声 / 产崽）和基础伤害 */
+          var eBase = 1300 * Math.pow(1.45, run.bossCount - 1);
+          e.maxHp = eBase;
+          e.hp = eBase;
+          e.dmg *= 1 + 0.12 * (run.bossCount - 1);
+          e.speed *= 1 + 0.05 * (run.bossCount - 1);
+        } else if (run.bossCount > 1) {
+          var boost = Math.pow(1.45, run.bossCount - 1);
+          e.maxHp *= boost;
+          e.hp = e.maxHp;
+          e.dmg *= 1 + 0.15 * (run.bossCount - 1);
+          e.speed *= 1 + 0.06 * (run.bossCount - 1);
+        }
+        /* 双首领：两只分摊血池，不然 6 分钟根本啃不完 */
+        if (idList.length > 1) {
+          e.maxHp *= 0.78;
+          e.hp = e.maxHp;
+        }
+        e.boss = true;
+        run.bosses.push(e);
+
+        /* 登场震场：清掉贴身杂兵，给首领一个能看清的舞台 */
+        for (var bi = 0; bi < run.enemies.length; bi++) {
+          var bo = run.enemies[bi];
+          if (bo === e || bo.boss || bo.dead) continue;
+          if (U.dist(bo.x, bo.y, e.x, e.y) < 115) {
+            bo.dead = true;
+            run.fx.push({
+              kind: 'p', x: bo.x, y: bo.y,
+              vx: U.rand(-60, 60), vy: U.rand(-70, 10),
+              life: 0.5, max: 0.5, color: '#3a3a42', size: 2
+            });
+          }
         }
       }
 
-      this.bannerShow(run.bossCount > 1
-        ? ('第 ' + run.bossCount + ' 只 ' + bossDef.name)
-        : (bossDef.name + ' 已进入死区'), 3);
+      run.boss = run.bosses[0] || null;
+
+      if (idList.length > 1) {
+        var n1 = (D.enemies[idList[0]] || D.enemies.boss).name;
+        var n2 = (D.enemies[idList[1]] || D.enemies.boss).name;
+        this.bannerShow(n1 + ' 与 ' + n2 + ' 同时出现', 3.4);
+      } else {
+        var only = D.enemies[idList[0]] || D.enemies.boss;
+        this.bannerShow(run.bossCount > 1
+          ? ('第 ' + run.bossCount + ' 只 ' + only.name)
+          : (only.name + ' 已进入死区'), 3);
+      }
       run.shake = 8;
       HS.Audio.doom();
     },
@@ -976,8 +1214,10 @@
         this.bannerShow('补给空投已落地 · 跟着信号柱', 2.2);
         var a = Math.random() * U.TAU;
         var ad = 150 + Math.random() * 40;
+        /* 落点先过 dropSpot：隧道的空投以前会掉进山体里，玩家永远捡不到 */
+        var sp = this.dropSpot(run.p.x + Math.cos(a) * ad, run.p.y + Math.sin(a) * ad);
         run.drops.push(this.hintDrop({
-          kind: 'chest', x: run.p.x + Math.cos(a) * ad, y: run.p.y + Math.sin(a) * ad,
+          kind: 'chest', x: sp.x, y: sp.y,
           bob: 0, life: 999, dead: false
         }, 6));
       } else {
@@ -1048,7 +1288,10 @@
         gearHeavy: 2.4 * mainCut,
         gearAuto: 4.5 + (autoGap ? 4 : 0),
         syn: 15 * (1 + luck * 0.8),
-        evo: 5 * (1 + luck * 0.6)
+        evo: 5 * (1 + luck * 0.6),
+        /* 取舍卡：每张只能拿一次，一局大概见 4~6 次。
+           权重比属性低一档 —— 它是"岔路"，不该像属性一样每级都来 */
+        trade: 6
       };
     },
 
@@ -1067,7 +1310,7 @@
       var used = {}, famUsed = {}, srcCount = {};
 
       var srcs = {
-        stat: [], gear: [], syn: [], evo: [],
+        stat: [], gear: [], syn: [], evo: [], trade: [],
         gearMain: [], gearSub: [], gearHeavy: [], gearAuto: []
       };
       var i, j, id, def, w, entry;
@@ -1116,7 +1359,8 @@
         if (!this.statOk(id, p)) continue;
         srcs.stat.push({
           kind: lvl ? 'passive' : 'passiveNew', id: id,
-          w: lvl ? 1.5 : 1.0, fam: 'stat:' + def.cat
+          /* 稀有卡（刃返这类改变规则的）出现得更少，看到时才有分量 */
+          w: lvl ? 1.5 : (def.rare ? 0.5 : 1.0), fam: 'stat:' + def.cat
         });
       }
       for (i = 0; i < D.gearPool.length; i++) {
@@ -1237,13 +1481,22 @@
         }
       }
 
+      /* ---------- 4.5 取舍卡 ----------
+         纯收益的卡堆再多也只是数值；取舍卡是这局唯一"要付代价"的选择。
+         拿过就不再出现（maxLvl 天然等于 1），也不占通用属性槽。 */
+      for (i = 0; i < D.tradeoffs.length; i++) {
+        var td0 = D.tradeoffs[i];
+        if (p.trade && p.trade[td0.id]) continue;
+        srcs.trade.push({ kind: 'trade', id: td0.id, w: 1.0, fam: 'trade:' + td0.id });
+      }
+
       /* ---------- 5. 抽卡 ---------- */
       /* 40 / 30 / 8 / 15 / 5：专属升级占大头，新装备单独一档，
          否则"新武器候选"太多，主武器永远升不上去（构筑会散掉）。
          副武器位 / 自动装备位空着时，新装备这一档临时抬权重；
          「幸运」会把权重从通用属性挪向专属 / 联动 / 进化。 */
       var SRC_W = this.sourceWeights(p, noSub, autoGap);
-      var order = ['stat', 'gear', 'gearMain', 'gearSub', 'gearHeavy', 'gearAuto', 'syn', 'evo'];
+      var order = ['stat', 'gear', 'gearMain', 'gearSub', 'gearHeavy', 'gearAuto', 'syn', 'trade', 'evo'];
       var guard = 0;
 
       while (out.length < n && guard++ < n * 12 + 40) {
@@ -1268,8 +1521,19 @@
 
         var picked = this.pickFrom(srcs[pickSrc], used, famUsed);
         if (!picked) {
-          /* 这一来源全被去重挡住了 → 清空它，让下一轮换来源 */
-          srcs[pickSrc] = [];
+          /* 这一来源的抽签全被去重挡住 → **只摘掉被挡住的那几项**，别整组清空。
+             以前直接 `srcs[key] = []`：同族的等级卡把数组堵死后，整组里的
+             特殊分支（比如手枪的「双发扳机」）也一起消失了 ——
+             机制保底明明有候选却抽不到，就是这么来的。 */
+          var keep = [], it, fk;
+          for (var ki = 0; ki < srcs[pickSrc].length; ki++) {
+            it = srcs[pickSrc][ki];
+            fk = it.fam || (it.kind + ':' + it.id);
+            if (used['id:' + it.id]) continue;
+            if ((famUsed[fk] || 0) >= 2) continue;
+            keep.push(it);
+          }
+          srcs[pickSrc] = keep;
           continue;
         }
         out.push(this.makeCard(picked));
@@ -1302,7 +1566,92 @@
           if (safePick) out[out.length - 1] = this.makeCard(safePick);
         }
       }
+
+      /* 保底二：三张里至少一张"会改变打法"的卡。
+         纯数值三连（+14% 伤害 / +10% 攻速 / +12% 范围）是这套系统最容易让人
+         疲倦的时刻 —— 抽卡总得有个钩子。机制卡 = 联动 / 进化（含预备）/
+         带 special 的专属分支 / 取舍卡。候选全空（都满级了）就保持原样。 */
+      if (n >= 3 && out.length) {
+        var hasMech = false;
+        for (oi = 0; oi < out.length; oi++) {
+          if (this.isMechCard(out[oi])) { hasMech = true; break; }
+        }
+        if (!hasMech) {
+          /* 先决定顶掉哪张：优先纯属性 / 纯等级，别动刚抽到的联动或进化 */
+          var slot = -1, kd;
+          for (oi = out.length - 1; oi >= 0; oi--) {
+            kd = out[oi].kind;
+            if (kd === 'passive' || kd === 'passiveNew' || kd === 'gearLevel') { slot = oi; break; }
+          }
+          if (slot < 0) slot = out.length - 1;
+
+          /* 候选直接从"手上的装备"扫 special 分支，不再读 srcs.gear ——
+             那张表在抽卡过程中会因为去重被摘项，特殊分支经常已经不在里面了。
+             取舍卡则是"半机制"（改的仍是数值，只是要付代价），单独一档。 */
+          var hardPool = [], softPool = [];
+          for (oi = 0; oi < srcs.syn.length; oi++) hardPool.push(srcs.syn[oi]);
+          for (oi = 0; oi < srcs.evo.length; oi++) hardPool.push(srcs.evo[oi]);
+          var gearLists = [p.weapons, p.autos];
+          for (var li = 0; li < gearLists.length; li++) {
+            for (var wi = 0; wi < gearLists[li].length; wi++) {
+              var we = gearLists[li][wi], wups = D.gearUps[we.id];
+              if (!wups) continue;
+              for (var bid in wups) {
+                if (!wups.hasOwnProperty(bid)) continue;
+                var brx = wups[bid];
+                if (!brx.special) continue;
+                if (((we.up && we.up[bid]) || 0) >= brx.maxLvl) continue;
+                hardPool.push({ kind: 'gearUp', id: we.id, up: bid, w: 0.9,
+                  fam: 'up:' + we.id + ':' + bid });
+              }
+            }
+          }
+          for (oi = 0; oi < srcs.trade.length; oi++) softPool.push(srcs.trade[oi]);
+
+          /* 一轮里同一件装备只能出现一次：除了"被顶掉的那张"，其它 id 都要避开 */
+          var keepUsed = {};
+          for (oi = 0; oi < out.length; oi++) {
+            if (oi !== slot) keepUsed['id:' + out[oi].id] = 1;
+          }
+          var mechPick = null;
+          if (hardPool.length) mechPick = this.pickFrom(hardPool, keepUsed, {});
+          if (!mechPick && hardPool.length) {
+            /* 严格模式全被判成"同一件装备"了（比如手上只有手枪，本轮已经有一张
+               手枪等级卡，而机制候选只剩它的「双发扳机」）——
+               退一步：允许顶掉那张同 id 的卡。换完这一轮里仍然只有一张手枪卡，
+               只是从"升级"变成了"改机制"，这本来就是保底该做的事。 */
+            for (var lc = 0; lc < hardPool.length && !mechPick; lc++) {
+              for (oi = 0; oi < out.length; oi++) {
+                if (out[oi].id !== hardPool[lc].id) continue;
+                mechPick = hardPool[lc];
+                slot = oi;
+                break;
+              }
+            }
+          }
+          if (!mechPick && softPool.length && (run.tradeForce || 0) < 6) {
+            /* 取舍卡是"用一次少一次"的资源：不设上限的话，后期没有强机制可选时
+               它会被每轮硬塞进三选一，反而变成另一种"每次都是它"的疲劳。
+               一局最多兜底 6 次，剩下的靠联动 / 进化 / 特殊分支自然出现。 */
+            mechPick = this.pickFrom(softPool, keepUsed, {});
+            if (mechPick) run.tradeForce = (run.tradeForce || 0) + 1;
+          }
+          if (mechPick) out[slot] = this.makeCard(mechPick);
+        }
+      }
       return out;
+    },
+
+    /** 这张卡会不会改变打法（而不是只把某个数字推高一点） */
+    isMechCard: function (c) {
+      if (!c) return false;
+      if (c.kind === 'synergy' || c.kind === 'evolve' ||
+          c.kind === 'evoPrep' || c.kind === 'trade') return true;
+      if (c.kind === 'gearUp') {
+        var br = D.gearUps[c.id] && D.gearUps[c.id][c.up];
+        return !!(br && br.special);
+      }
+      return false;
     },
 
     /** 在候选里按权重抽一个，跳过重复与"三张同族" */
@@ -1369,6 +1718,7 @@
         if (def.needs === 'fire' && !elems.fire) return false;
         if (def.needs === 'ice' && !elems.ice) return false;
         if (def.needs === 'both' && !(elems.fire && elems.ice)) return false;
+        if (def.needs === 'melee' && !fam.melee) return false;
       }
 
       if (id === 'pierce' || id === 'split' || id === 'bounce' || id === 'homing' || id === 'projCount') {
@@ -1394,6 +1744,16 @@
           if (HS.Gear.hasGear(p, req.gearAny[i])) { any = true; break; }
         }
         if (!any) return null;
+      }
+      /* gearAny2：第二件"任一即可"（例：冰火两重天 = 冰霜环 + 火焰环或毒雾）。
+         一件都没有时**不能** return null —— 那样"已经有冰霜环"的玩家就永远刷不到这张卡了；
+         按候选里的第一件记成"还缺它"，拿卡时会把那件装备一并给你。 */
+      if (req.gearAny2) {
+        var any2 = false;
+        for (var j = 0; j < req.gearAny2.length; j++) {
+          if (HS.Gear.hasGear(p, req.gearAny2[j])) { any2 = true; break; }
+        }
+        if (!any2) miss.push({ type: 'gear', id: req.gearAny2[0] });
       }
       /* 按兼容族判定的联动：手上没有这一族武器就根本不出现 */
       if (req.fam && !HS.Gear.famSet(p)[req.fam]) return null;
@@ -1466,12 +1826,12 @@
         return {
           kind: clv ? 'passive' : 'passiveNew', id: item.id,
           name: def.name,
-          sub: '通用属性 · ' + (def.cat || '强化') + '  ' +
+          sub: (def.rare ? '稀有属性' : '通用属性') + ' · ' + (def.cat || '强化') + '  ' +
             (clv ? ('Lv' + clv + ' → Lv' + (clv + 1)) : '新'),
           hint: def.apply || '',
           icon: def.icon, color: def.color,
           desc: def.desc(clv + 1),
-          rare: false, src: '通用属性'
+          rare: !!def.rare, src: def.rare ? '稀有属性' : '通用属性'
         };
       }
 
@@ -1484,26 +1844,30 @@
         var maxL = def.maxLvl || 5;
         var slotTxt = def.slot === 'auto' ? '自动装备' : (def.slot === 'heavy' ? '重型武器' : (def.slot === 'sub' ? '副武器' : '主武器'));
         var growTxt = def.evo ? '觉醒' : '基础成长';
-        var tail;
+        /* 满级提示以前直接拼在 desc 尾巴上，长描述（红莲 / 长矛）会顶到两行之外
+           被 wrap2 截成「…」。改成卡片底栏单独一行：描述区只放武器本身。 */
+        var foot = '', footColor = '#ffd166';
         if (lv2 + 1 >= maxL) {
           var evoDef2 = D.evolutions[item.id];
           if (evoDef2 && !def.evo) {
             var rq = evoDef2.req || {};
             var rn = (rq.stat && D.passives[rq.stat]) ? D.passives[rq.stat].name : '';
-            tail = '（已满级 · 进化「' + evoDef2.name + '」' +
-              (rn ? '需 ' + rn + ' Lv' + (rq.statLvl || 1) : '条件已满足') + '）';
+            foot = '满级 · 进化「' + evoDef2.name + '」' +
+              (rn ? '需 ' + rn + ' Lv' + (rq.statLvl || 1) : '条件已满足');
           } else {
-            tail = '（觉醒已满）';
+            foot = '觉醒已满';
           }
-        } else {
-          tail = def.evo ? '（进化后继续变强）' : '（基础伤害 / 射速提升）';
+        } else if (def.evo) {
+          foot = '觉醒后继续变强';
+          footColor = '#8b95a3';
         }
         return {
           kind: 'gearLevel', id: item.id,
           name: def.name,
           sub: growTxt + ' Lv' + lv2 + '→' + (lv2 + 1) + '/' + maxL + ' · ' + slotTxt,
           icon: def.icon, color: def.color,
-          desc: def.desc + tail,
+          desc: def.desc,
+          foot: foot, footColor: footColor,
           rare: false, src: def.evo ? '觉醒' : '武器成长'
         };
       }
@@ -1522,9 +1886,27 @@
           sub: def.name + '  ' +
             (lvl ? ('Lv' + lvl + '→' + (lvl + 1)) : 'Lv1') + '/' + br.maxLvl +
             (br.special ? ' · 改变机制' : ''),
-          icon: def.icon, color: def.color,
+          /* 分支可以自带图标 / 配色（如出血用血滴），没写就沿用武器本身的 */
+          icon: br.icon || def.icon, color: br.color || def.color,
           desc: br.desc,
           rare: !!br.special, src: '武器专属'
+        };
+      }
+
+      if (item.kind === 'trade') {
+        var td = null;
+        for (i = 0; i < D.tradeoffs.length; i++) if (D.tradeoffs[i].id === item.id) td = D.tradeoffs[i];
+        if (!td) return { kind: 'heal', id: 'heal', name: '急救包', sub: '', desc: '', icon: 'regen', color: '#8ce99a' };
+        return {
+          kind: 'trade', id: item.id,
+          name: td.name,
+          sub: '取舍 · ' + (td.cat || '交易'),
+          icon: td.icon, color: td.color,
+          /* gain / lose 分开给：卡面得把"付了什么"和"换到什么"分成两行写，
+             混成一句的话玩家只会读到前半句 */
+          gain: td.gain || '', lose: td.lose || '',
+          desc: td.desc,
+          rare: true, src: '取舍'
         };
       }
 
@@ -1532,10 +1914,32 @@
         var syn = null;
         for (i = 0; i < D.synergies.length; i++) if (D.synergies[i].id === item.id) syn = D.synergies[i];
         var slv2 = p.synLv[item.id] || 1;
+        /* 联动卡有两种卖法：已经成立的卖"强化等级"，还差一件的卖"达成条件"。
+           后者拿卡时会把缺的那件**直接塞给你**（见 applyChoice 的 miss 分支），
+           所以副标题写"缺什么"，卡片底栏单独一行写"拿卡附赠什么" ——
+           只写在副标题里玩家会当成纯 buff，根本注意不到自己白拿了一件装备
+           （冰火两重天给冰霜环就是这么被漏掉的）。 */
+        var synSub, foot = '', footColor = '#8ce99a';
+        if (item.boost) {
+          synSub = '强化 Lv' + slv2 + ' → Lv' + (slv2 + 1);
+        } else if (item.miss && item.miss.type === 'gear') {
+          var gift = D.gear[item.miss.id];
+          var giftName = gift ? gift.name : item.miss.id;
+          synSub = '达成条件 · 缺 ' + giftName;
+          foot = '拿卡附赠 ' + giftName + ' Lv1';
+        } else if (item.miss && item.miss.type === 'stat') {
+          var gDef2 = D.passives[item.miss.id];
+          var statName = gDef2 ? gDef2.name : item.miss.id;
+          synSub = '达成条件 · 缺 ' + statName;
+          foot = '拿卡附赠 ' + statName + ' +1';
+        } else {
+          synSub = '达成条件';
+        }
         return {
           kind: 'synergy', id: item.id, boost: item.boost, miss: item.miss,
           name: syn.name,
-          sub: '装备联动 · ' + (item.boost ? ('强化 Lv' + slv2 + ' → Lv' + (slv2 + 1)) : '达成条件'),
+          sub: synSub,
+          foot: foot, footColor: footColor,
           icon: syn.icon, color: syn.color,
           desc: syn.desc,
           rare: true, src: '装备联动'
@@ -1545,20 +1949,28 @@
       /* 新装备 */
       def = D.gear[item.id];
       var slotName = def.slot === 'auto' ? '自动装备'
-        : (def.slot === 'heavy' ? '重型武器' : (def.slot === 'sub' ? '副武器' : '主武器'));
+        : (def.slot === 'heavy' ? '重型' : (def.slot === 'sub' ? '副武器' : '主武器'));
+      /* 副标题只留"占哪个槽 / 顶掉谁 / 掉到几级"三件事。
+         以前是「槽位 · 分类 · 替换 XXX Lv5 · 新枪从 Lv1 起」，
+         320px 屏实测 220px 宽、可用只有 200px，整串顶到卡片外面；
+         重武器那档还把「重型武器」写了两遍（slotName 和 def.cat 是同一个词）。
+         分类（现代枪械 / 特殊近战）信息量最低，直接去掉。
+         右边也改成写新装备自己的名字：以前固定写「新枪 Lv1」，
+         冷兵器（战斗匕首、飞刀…）也顶着"枪"字，卡面文案直接说谎。 */
       var cn = '';
       var curMain = HS.Gear.mainEntry(p), curSub = HS.Gear.subEntry(p);
+      var newTxt = def.name + ' Lv1';
       if (def.slot === 'heavy') {
-        cn = (curMain ? ' · 顶替 ' + D.gear[curMain.id].name : '') + ' · 占满两个槽位';
+        cn = ' · 占两格' + (curMain ? ' · 顶替 ' + D.gear[curMain.id].name : '');
       } else if (def.slot === 'main' && curMain) {
-        cn = ' · 替换 ' + D.gear[curMain.id].name + ' Lv' + curMain.lvl + ' · 新枪从 Lv1 起';
+        cn = ' · ' + D.gear[curMain.id].name + ' Lv' + curMain.lvl + ' → ' + newTxt;
       } else if (def.slot === 'sub' && curSub) {
-        cn = ' · 替换 ' + D.gear[curSub.id].name + ' Lv' + curSub.lvl;
+        cn = ' · ' + D.gear[curSub.id].name + ' Lv' + curSub.lvl + ' → ' + newTxt;
       }
       return {
         kind: item.kind, id: item.id,
         name: def.name,
-        sub: slotName + ' · ' + def.cat + cn,
+        sub: slotName + cn,
         icon: def.icon, color: def.color,
         desc: def.desc,
         rare: def.rarity >= 4, src: '新装备'
@@ -1646,6 +2058,13 @@
 
       if (c.kind === 'passive' || c.kind === 'passiveNew') {
         p.passives[c.id] = (p.passives[c.id] || 0) + 1;
+        this.recalc(p);
+        return;
+      }
+
+      if (c.kind === 'trade') {
+        if (!p.trade) p.trade = {};
+        p.trade[c.id] = 1;
         this.recalc(p);
         return;
       }
@@ -1770,6 +2189,22 @@
 
       var gold = U.randInt(table.gold[0], table.gold[1]);
       run.gold += gold;
+
+      /* 翻到东西了：切开心脸 + 原地蹦两下（render.js 按 cheerT 算抛物线），
+         顺手撒一圈星星。只加表现，不动数值。 */
+      p.cheerT = p.cheerMax;
+      for (var si = 0; si < 7; si++) {
+        run.fx.push({
+          kind: 'p',
+          x: p.x + U.rand(-9, 9),
+          y: p.y - 14 + U.rand(-6, 6),
+          vx: U.rand(-16, 16),
+          vy: U.rand(-34, -16),
+          life: 0.5, max: 0.5,
+          color: si % 2 ? 'rgba(255,236,150,0.95)' : 'rgba(255,255,255,0.9)',
+          size: 2
+        });
+      }
       if (run.texts.length > 30) run.texts.shift();
       run.texts.push({
         x: o.x, y: o.y - o.h * 0.5 - 6, vy: -26, life: 0.9, max: 0.9,
@@ -1810,24 +2245,25 @@
       return this.buildChoices(1, true);
     },
 
-    /** 搜刮产出落地：主武器要玩家点头，其它直接生效。返回是否弹了询问框 */
+    /**
+     * 搜刮 / 空投翻到一张卡：**一律先问一句**，玩家点头才生效。
+     *
+     * 以前只有手持武器会问（换掉要清空等级和分支），属性 / 分支 / 联动 /
+     * 自动装备直接塞给玩家 —— 打完一波才发现构筑里多了点东西，也不知道是什么。
+     * 现在统一走 `lootask` 弹窗（UI.lootAsk 会画出完整卡面），不要就什么都不发生。
+     * 返回 true = 弹了询问框（调用方据此决定要不要另放音效）。
+     */
     giveLoot: function (card, label) {
       if (!card) return false;
-      var d = card.kind === 'weaponNew' ? D.gear[card.id] : null;
-      if (d && (d.slot === 'main' || d.slot === 'heavy')) {
-        this.lootAsk = card;
-        this.lootFrom = label || '搜刮';
-        this.state = 'lootask';
-        HS.Input.enabled = false;
-        HS.Audio.levelup();
-        return true;
-      }
-      this.applyChoice(card);
-      this.bannerShow('搜刮到补给：' + card.name, 2.2);
-      return false;
+      this.lootAsk = card;
+      this.lootFrom = label || '搜刮';
+      this.state = 'lootask';
+      HS.Input.enabled = false;
+      HS.Audio.levelup();
+      return true;
     },
 
-    /** 搜刮翻到的主武器：yes=换上（旧主武器连同分支一起丢掉） */
+    /** 搜刮翻到的卡：yes=收下（手持武器会连同分支一起替换掉旧的） */
     answerLoot: function (yes) {
       if (this.state !== 'lootask') return;
       var c = this.lootAsk;
@@ -1836,7 +2272,9 @@
       HS.Input.enabled = true;
       if (yes && c) {
         this.applyChoice(c);
-        this.bannerShow('已换装 · ' + c.name, 2.4);
+        var d = c.kind === 'weaponNew' ? D.gear[c.id] : null;
+        var swapped = !!(d && (d.slot === 'main' || d.slot === 'heavy'));
+        this.bannerShow((swapped ? '已换装 · ' : '收下 · ') + c.name, 2.2);
         HS.Audio.win();
       } else {
         HS.Audio.ui();
@@ -2046,6 +2484,8 @@
       if (id === 'set:sfx') {
         this.sfxOn = !this.sfxOn;
         HS.Audio.enabled = this.sfxOn;
+        /* 关音效立刻掐掉红莲的常驻嗡鸣，别等 0.32 秒的看门狗 */
+        if (!this.sfxOn) HS.Audio.beamOff();
         d.sfx = this.sfxOn;
         HS.Save.flush();
         if (this.sfxOn) HS.Audio.ui();
@@ -2065,6 +2505,13 @@
         d.vib = this.vibOn;
         HS.Save.flush();
         if (this.vibOn) HS.Audio.ui();
+        return;
+      }
+      if (id === 'set:turn') {
+        this.turnView = !this.turnView;
+        d.turnView = this.turnView;
+        HS.Save.flush();
+        HS.Audio.ui();
         return;
       }
       if (id === 'set:fx') {
@@ -2088,7 +2535,7 @@
         if (this.t - (this.wipeAskT || -9) < 0.3) return;   // 刚弹出来，忽略连点
         HS.Save.reset();
         this.save = HS.Save.data;
-        this.selChar = 'soldier';
+        this.selChar = 'whale';
         this.selMap = 'highway';
         this.sfxOn = true;
         this.bgmOn = true;
@@ -2119,26 +2566,11 @@
         return;
       }
 
+      /* 角色只剩一个，没有解锁/选择流程；保留这个分支只是让旧存档里
+         残留的 char:xxx 点击不至于报错 */
       if (id.indexOf('char:') === 0) {
-        var cid = id.substring(5);
-        if (HS.Save.hasChar(cid)) {
-          this.selChar = cid;
-          HS.Audio.ui();
-        } else {
-          var ch = D.chars[cid];
-          if (d.gold >= ch.cost) {
-            d.gold -= ch.cost;
-            d.chars.push(cid);
-            HS.Save.flush();
-            this.selChar = cid;
-            this.notice('已解锁 ' + ch.name);
-            HS.Audio.win();
-            HS.Save.checkAch();
-          } else {
-            this.notice('金币不足，还差 ' + (ch.cost - d.gold));
-            HS.Audio.hurt();
-          }
-        }
+        this.selChar = 'whale';
+        HS.Audio.ui();
         return;
       }
 
@@ -2165,17 +2597,25 @@
       }
 
       if (id === 'pause') {
-        if (this.state === 'run') { this.state = 'paused'; HS.Input.enabled = false; }
+        if (this.state === 'run') {
+          this.state = 'paused';
+          this.pauseSet = false;        // 每次进暂停都从主菜单开始
+          HS.Input.enabled = false;
+        }
         return;
       }
+      /* 暂停页 → 设置子页（改音效 / 画面特效，不用退出这一局） */
+      if (id === 'pause:set') { this.pauseSet = true; HS.Audio.ui(); return; }
+      if (id === 'pause:back') { this.pauseSet = false; HS.Audio.ui(); return; }
       if (id === 'resume') {
         if (this.state === 'paused') {
+          this.pauseSet = false;
           this.state = 'run'; HS.Input.enabled = true; HS.Input.reset();
         }
         return;
       }
-      if (id === 'restart') { this.startRun(this.selMap, this.selChar); return; }
-      if (id === 'quit') { this.state = 'title'; HS.Input.enabled = false; return; }
+      if (id === 'restart') { this.pauseSet = false; this.startRun(this.selMap, this.selChar); return; }
+      if (id === 'quit') { this.pauseSet = false; this.state = 'title'; HS.Input.enabled = false; return; }
       if (id === 'again') { this.startRun(this.selMap, this.selChar); return; }
 
       if (id.indexOf('card:') === 0) { this.pickChoice(parseInt(id.substring(5), 10)); return; }
@@ -2200,5 +2640,5 @@
   HS.RUN_TIME = RUN_TIME;
   HS.MAX_WEAPONS = MAX_WEAPONS;
   HS.MAX_PASSIVES = MAX_PASSIVES;
-  HS.VERSION = '1.0.1';
+  HS.VERSION = '1.0.2';
 })();

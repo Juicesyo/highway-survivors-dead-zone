@@ -7,50 +7,43 @@
   var HS = G.HS;
   HS.Data = HS.Data || {};
 
+  /**
+   * 主角只有一个：鲸鱼娘。
+   *
+   * 以前这里有四个可解锁角色（士兵 / 医生 / 机械师 / 拾荒者），现在全部并掉了 ——
+   * 数值沿用原来「退伍士兵」那一套（生命 100 / 速度 64 / 手枪开局 / 伤害 +10%），
+   * 所以 tools/balance.js 的平衡基线不受影响，不用重新标定。
+   *
+   * sprite 由 game.js 拼成 player_whale / player_whale_happy 两张表情帧，
+   * 表情切换只看 p.cheerT（搜刮成功后的开心跳），和数值无关。
+   */
   HS.Data.chars = {
-    soldier: {
-      id: 'soldier', name: '退伍士兵', tag: '均衡',
-      desc: '在高速公路上丢了队伍的老兵。伤害稳定，适合第一次上路。',
+    whale: {
+      id: 'whale', name: '鲸鱼娘', tag: '唯一幸存者',
+      desc: '在死区里晃荡的鲸鱼娘。白围裙洗得发亮，枪法比打扫还利索。',
       hp: 100, speed: 64, weapon: 'pistol', dmgMul: 1.10, armor: 0, regen: 0,
-      color: '#5b8ac9', cost: 0,
-      perks: ['伤害 +10%', '手枪开局', '副武器槽空着']
-    },
-    medic: {
-      id: 'medic', name: '战地医生', tag: '续航',
-      desc: '背着急救包跑得比谁都快，伤口自己会好。',
-      hp: 90, speed: 67, weapon: 'smg', sub: 'syringe', dmgMul: 1.0, armor: 0, regen: 0.75,
-      color: '#d8dee6', cost: 300,
-      perks: ['每秒回复 0.75', '移速更快', '冲锋枪 + 治疗注射器']
-    },
-    mechanic: {
-      id: 'mechanic', name: '废土机械师', tag: '肉盾',
-      desc: '把报废零件焊成了旋转刀片，皮糙肉厚，专治贴脸。',
-      hp: 122, speed: 59, weapon: 'chainsaw', auto: ['orbitblade'], dmgMul: 1.0, armor: 1, regen: 0,
-      color: '#d9a441', cost: 700,
-      perks: ['最大生命 +22', '减伤 1 点', '链锯 + 旋转飞刀']
-    },
-    ghost: {
-      id: 'ghost', name: '拾荒者', tag: '高风险',
-      desc: '没人知道他的真名。跑得极快，但只有 70 点生命。',
-      hp: 70, speed: 78, weapon: 'shotgun', sub: 'throwingknife', dmgMul: 1.22, armor: 0, regen: 0,
-      color: '#9b7bd4', cost: 1200,
-      perks: ['伤害 +22%', '移速 +22%', '霰弹枪 + 飞刀，生命很低']
+      color: '#5f7cba', cost: 0,
+      perks: ['伤害 +10%', '手枪开局', '搜刮成功会开心跳一下']
     }
   };
 
-  HS.Data.charOrder = ['soldier', 'medic', 'mechanic', 'ghost'];
+  HS.Data.charOrder = ['whale'];
 
   /**
-   * 三张地图都是「一条公路」：
+   * 五张地图都是「一条公路」：
    *   1. 末世街区 —— 白天，街道 + 车壳
    *   2. 死区之夜 —— 同一片街区，天黑了：视野只有身边一圈，子弹也打不远
    *   3. 荒漠公路 —— 一条笔直的柏油路钻进地平线，路边零星几间屋子 / 旅馆，
    *      守着路的持枪匪徒会朝你点射
+   *   4. 锈水高速 —— 沉进锈水的立交，浅水拖脚深水无路
+   *   5. 公路隧道 —— 两侧是撞不穿的墙，没有楼没有岔路，只有一条走廊
    *
    * night  : 画面进入夜间模式（render.js 的 drawNight 负责压黑，只留身边的光）
    * vision : 夜视半径（世界像素）。中心到这里是全亮，再往外逐渐被黑吃掉
    * rangeMul: 局内所有武器射程倍率（Gear.global 按 p.rangeMul 结算）
    * gunmen : 刷怪时混入持枪匪徒的基础比例
+   * tunnel : 隧道地形（render.js / obstacles.js 各有一套处理）
+   * bossIds: 一场多个首领（都打死才通关）；只有一个首领时继续用 bossId
    */
   HS.Data.maps = {
     highway: {
@@ -88,10 +81,25 @@
       bossId: 'axeboss', bossDmgCut: 0.28,
       water: true,
       sky: '#172421'
+    },
+    /* 第五张：公路隧道。
+       tunnel : render.js 走另一套地面（双侧连续隧道墙 + 顶灯光池 + 横梁黑影），
+                obstacles.js 沿着 |x| = 88 生成两道不可破坏的墙，
+                所以这张图没有楼、没有岔路，只有一条走廊。
+       bossIds: 双首领（尖啸者 + 育母），两只都倒下才算通关 ——
+                game.js 的 spawnBoss 认这个数组，killEnemy 认 run.bosses 的长度。 */
+    tunnel: {
+      id: 'tunnel', name: '公路隧道', theme: 'tunnel',
+      desc: '钻进山体的旧隧道。墙撞不穿，顶灯三盏坏两盏，尸群只从前后压来。',
+      spawnMul: 1.12, xpMul: 1.45, goldMul: 1.5, hpMul: 1.42, resist: 0.13,
+      unlockWins: 4, clearGold: 140,
+      bossIds: ['shrieker', 'brood'], bossDmgCut: 0.34,
+      tunnel: true,
+      sky: '#0e1116'
     }
   };
 
-  HS.Data.mapOrder = ['highway', 'night', 'desert', 'flood'];
+  HS.Data.mapOrder = ['highway', 'night', 'desert', 'flood', 'tunnel'];
 
   /** 局外永久强化 */
   HS.Data.perms = [
@@ -156,10 +164,6 @@
     {
       id: 'kills300', name: '屠夫', desc: '单局击杀 300 个感染者',
       check: function (s) { return s.bestKills >= 300; }
-    },
-    {
-      id: 'chars', name: '全员到齐', desc: '解锁全部角色',
-      check: function (s) { return s.chars.length >= 4; }
     },
     {
       id: 'gold3k', name: '废土富翁', desc: '累计获得 3000 金币',
